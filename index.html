@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<title>Tinytapeout VGA</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<script src="swissgl.js"></script>
+<script src="circuit.js"></script>
+<script src="util.js"></script>
+<style>
+    body, html {margin: 0; padding: 0; overflow: hidden; color:#5c5;}
+    #c {width:100vw; height: 100vh}
+    #controls {
+        position: absolute;
+        left: 20px;
+        top: 20px;
+    }
+    #speed {
+        width: 200px;
+    }
+</style>
+<canvas id="c"></canvas>
+<div id="controls">
+Speed: <input id="speed" type="range" min="0" max="12" value="0">
+</div>
+<script>
+    "use strict";
+    const canvas = document.getElementById('c');
+    const glsl = SwissGL(canvas);
+
+    function array2tex(array, format, tag, w=256) {
+        const {chn, CpuArray} = TextureFormats[format];
+        const n = array.length/chn;
+        const h = Math.ceil(n/w);
+        const data = new CpuArray(w*h*chn);
+        data.set(array);
+        return glsl({}, {size:[w,h], data, format, tag});
+    }
+
+    const data = {
+        rects: array2tex(CIRCUIT.wire_rects, 'rgba32f', 'rects'),
+        infos: array2tex(CIRCUIT.wire_infos, 'rg32i', 'infos'),
+    };
+
+    let main;
+    async function init() {
+        const wasm = await WebAssembly.instantiateStreaming(
+            fetch('gates.wasm'));
+        main = prepareWASM(wasm.instance);
+        main.gate_n[0] = CIRCUIT.gates.luts.length;
+        for (const name in CIRCUIT.gates) {
+            main[name].set(CIRCUIT.gates[name]);
+        }
+        console.log(main.update_all());
+        console.log(main.update_all());
+        console.log(main.update_all());
+    }
+    init();
+
+    const out_wires = Array(8).fill(1).map(
+        (_,i)=>CIRCUIT.pins[`uo_out[${i}]`]);
+
+    const PAD = 48;
+    const W = 640+PAD*2, H = 480+PAD*2;
+    let x=44, y=33;
+    const screen_row = new Uint8Array(W*4);
+    const screen = glsl({}, {size:[W,H], tag:'screen'});
+    let tick=0
+
+    function sync_row() {
+        const row = glsl({}, {data:screen_row, size:[W,1], tag:'row'});
+        glsl({row, ray:[x,y],
+            VP:`XY.x,(ray.y+XY.y*0.5)/float(ViewSize.y)*2.0-1.0,0,1`,
+            FP:`row(UV)`}, screen);
+    }
+
+    function step() {
+        if (!main) return;
+        const clk = tick&1;
+        const rst_n = (tick>5) & 1; // ???
+        const [R1, G1, B1, vsync, R0, G0, B0, hsync] = out_wires.reverse();
+        const S = main.state;
+        const prev_hsync = S[hsync];
+        const prev_vsync = S[vsync];
+        main.set_signal(CIRCUIT.pins.clk, clk);
+        main.set_signal(CIRCUIT.pins.rst_n, rst_n);
+        while(main.run_wave());
+
+        if (clk == 1) {
+            if (x<W) {
+                const p = x*4;
+                screen_row[p+0] = S[R1]*170 + S[R0]*85;
+                screen_row[p+1] = S[G1]*170 + S[G0]*85;
+                screen_row[p+2] = S[B1]*170 + S[B0]*85;
+            }
+            x += 1;
+        }
+        if (prev_hsync && S[hsync]==0) {
+            x = 0;
+            sync_row();
+            screen_row.fill(0);
+            y += 1;
+        }
+        if (prev_vsync && S[vsync]==0) {
+            x = 0;
+            y = 0;
+        }
+        tick += 1;
+    }
+
+    const speed = document.getElementById('speed');
+    glsl.loop(({time})=>{
+        glsl.adjustCanvas();
+
+        const step_n = Math.pow(2, speed.value);
+        for (let i=0; i<step_n; ++i)step();
+
+        sync_row();
+
+        const state = glsl({}, {data:main?.state||null, size:[256, 16], format:'r8u', tag:'state'});
+
+        const inc= `
+        vec2 fit(vec2 p, vec4 box, bool flipY) {
+            vec2 V = vec2(ViewSize);
+            vec2 B = box.zw;
+            p = 2.0*(p-box.xy)/B-1.0;
+            p.y = flipY ? -p.y : p.y;
+            float ab = B.x/B.y, av = V.x/V.y;
+            p *= min(vec2(ab/av, av/ab), 1.0);
+            return p;
+        }`;
+
+        glsl({time, ...data, state,
+        Grid:data.rects.size, Blend:'s+d', Inc:inc+`
+        uniform isampler2D infos;
+        uniform usampler2D state;`, VP:`
+        vec4 rect = rects(ID.xy);
+        ivec4 info = texelFetch(infos, ID.xy, 0);
+        int wire = info.x;
+        float v = float(texelFetch(state, ivec2(wire&0xff, wire>>8), 0).x);
+        varying vec4 color = 0.2+vec4(0.4*v);
+        vec2 p = mix(rect.xy, rect.zw, UV);
+        VPos.xy = fit(p, vec4(0,0,160,115), false);`,
+        FP:`color`});
+
+        glsl({WH:[W,H], screen, Inc:inc, Blend:'s+d',
+        VP:`fit(UV*WH, vec4(0,0,WH),true),0,1`, FP:`
+        vec4 c = screen(UV);
+        FOut = c*0.5`});
+
+        glsl({ray:[x,y], WH:[W,H], Inc:inc, r:Math.sqrt(step_n),
+        Blend:'s+d',VP:`fit(ray+4.*XY*vec2(r,1), vec4(0,0,WH), true), 0, 1`,
+        FP:`exp(-dot(XY,XY)*2.0)*vec4(0.9,0.9,0.3,1.0)`});
+
+    });
+
+</script>
