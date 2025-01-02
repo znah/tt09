@@ -25,6 +25,7 @@
     }
     #demo {
         width:100vw; height: 90vh;
+        max-height: 90vw;
         position: relative;
     }
     #c {width:100%; height: 100%}
@@ -35,11 +36,11 @@
         background-color: black;
     }
     #speed {
-        width: 200px;
+        width: 180px;
     }
     #speed_display {
         display: inline-block;
-        width: 40px;
+        width: 50px;
         text-align: right;
     }
     main {
@@ -170,14 +171,13 @@
         const state = glsl({}, {data:main?.state||null, size:[256, 16], format:'r8u', tag:'state'});
 
         const inc= `
-        vec2 fit(vec2 p, vec4 box, bool flipY) {
-            vec2 V = vec2(ViewSize);
-            vec2 B = box.zw;
-            p = 2.0*(p-box.xy)/B-1.0;
-            p.y = flipY ? -p.y : p.y;
+        const vec2 justify = vec2(0.0, 1.0);
+        vec2 fit(vec2 p, vec4 box) {
+            vec2 V=vec2(ViewSize), B=box.zw;
             float ab = B.x/B.y, av = V.x/V.y;
-            p *= min(vec2(ab/av, av/ab), 1.0);
-            return p;
+            vec2 s = min(vec2(ab/av, av/ab), 1.0);
+            vec2 q = 2.0/B*s;
+            return q*(p-box.xy)-s + justify*(q-s+1.0);
         }`;
 
         glsl({time, ...data, state,
@@ -193,18 +193,18 @@
             color *= vec4(0.8, 0.8, 0.4, 1.0);
         }
         vec2 p = mix(rect.xy, rect.zw, UV);
-        VPos.xy = fit(p, vec4(0,0,160,115), false);`,
+        VPos.xy = fit(p, vec4(0,0,160,115));`,
         FP:`color`});
 
         glsl({WH:[W,H], ray:[x,y], screen, Inc:inc, Blend:'s+d',
-        VP:`fit(UV*WH, vec4(0,0,WH),true),0,1`, FP:`
+        VP:`fit(vec2(UV.x, 1.0-UV.y)*WH, vec4(0,0,WH)),0,1`, FP:`
         vec4 c = screen(UV);
         float d = UV.y-(ray.y/WH.y);
         c *= d>0.0 ? clamp(d*10.0, 0.0, 1.0) : 1.0;
         FOut = c*0.5`});
 
         glsl({ray:[x,y], WH:[W,H], Inc:inc, r:Math.sqrt(step_n),
-        Blend:'s+d',VP:`fit(ray+4.*XY*vec2(r,1), vec4(0,0,WH), true), 0, 1`,
+        Blend:'s+d',VP:`fit(vec2(ray.x, WH.y-ray.y-1.0)+4.*XY*vec2(r,1), vec4(0,0,WH)), 0, 1`,
         FP:`exp(-dot(XY,XY)*2.0)*vec4(0.9,0.9,0.3,1.0)`});
 
     });
