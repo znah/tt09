@@ -6,24 +6,65 @@
 <script src="circuit.js"></script>
 <script src="util.js"></script>
 <style>
-    body, html {margin: 0; padding: 0; overflow: hidden; color:#5c5;}
-    #c {width:100vw; height: 100vh}
+    *, *::before,*::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+        font-family: Verdana, Geneva, Tahoma, sans-serif
+    }
+    body, html {
+        margin: 0; padding: 0; color:#5c5;
+        font-size: 16px;
+        background-color: #222;
+    }
+    h1, p {
+        margin: 10px 0;
+    }
+    h1 {
+        font-size: 30px;
+    }
+    #demo {
+        width:100vw; height: 90vh;
+        position: relative;
+    }
+    #c {width:100%; height: 100%}
     #controls {
         position: absolute;
         left: 20px;
-        top: 20px;
+        bottom: 20px;
+        background-color: black;
     }
     #speed {
         width: 200px;
     }
+    #speed_display {
+        display: inline-block;
+        width: 40px;
+        text-align: right;
+    }
+    main {
+        margin: 0 auto;  /* Center horizontally */
+        max-width: 960px;
+        padding: 0px 10px;
+    }
 </style>
-<canvas id="c"></canvas>
-<div id="controls">
-Speed: <input id="speed" type="range" min="0" max="12" value="0">
+<div id="demo">
+    <canvas id="c"></canvas>
+    <div id="controls">
+        <div>Status</div>
+
+    Speed: <div id="speed_display"></div> <input id="speed" type="range" min="-5" max="12" value="0">
+    </div>
 </div>
+<main>
+    <h1>TinyTapeout 09 VGA</h1>
+    <p>This demo</p>
+
+</main>
 <script>
     "use strict";
-    const canvas = document.getElementById('c');
+    const $ = q=>document.querySelector(q);
+    const canvas = $('#c');
     const glsl = SwissGL(canvas);
 
     function array2tex(array, format, tag, w=256) {
@@ -106,13 +147,24 @@ Speed: <input id="speed" type="range" min="0" max="12" value="0">
         tick += 1;
     }
 
-    const speed = document.getElementById('speed');
+    const speed = $('#speed');
+    let skip_n = 0;
     glsl.loop(({time})=>{
         glsl.adjustCanvas();
 
         const step_n = Math.pow(2, speed.value);
-        for (let i=0; i<step_n; ++i)step();
-
+        if (step_n >= 1) {
+            $('#speed_display').textContent = step_n+'x';
+            for (let i=0; i<step_n; ++i) step();
+        } else {
+            $('#speed_display').textContent = `1/${1/step_n}x`;
+            if (skip_n <= 0) {
+                step();
+                skip_n = 1/step_n-1;
+            } else {
+                skip_n--;
+            }   
+        } 
         sync_row();
 
         const state = glsl({}, {data:main?.state||null, size:[256, 16], format:'r8u', tag:'state'});
@@ -137,13 +189,18 @@ Speed: <input id="speed" type="range" min="0" max="12" value="0">
         int wire = info.x;
         float v = float(texelFetch(state, ivec2(wire&0xff, wire>>8), 0).x);
         varying vec4 color = 0.2+vec4(0.4*v);
+        if (info.y > 0) {
+            color *= vec4(0.8, 0.8, 0.4, 1.0);
+        }
         vec2 p = mix(rect.xy, rect.zw, UV);
         VPos.xy = fit(p, vec4(0,0,160,115), false);`,
         FP:`color`});
 
-        glsl({WH:[W,H], screen, Inc:inc, Blend:'s+d',
+        glsl({WH:[W,H], ray:[x,y], screen, Inc:inc, Blend:'s+d',
         VP:`fit(UV*WH, vec4(0,0,WH),true),0,1`, FP:`
         vec4 c = screen(UV);
+        float d = UV.y-(ray.y/WH.y);
+        c *= d>0.0 ? clamp(d*10.0, 0.0, 1.0) : 1.0;
         FOut = c*0.5`});
 
         glsl({ray:[x,y], WH:[W,H], Inc:inc, r:Math.sqrt(step_n),
