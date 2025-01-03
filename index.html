@@ -13,30 +13,33 @@
         font-family: Verdana, Geneva, Tahoma, sans-serif
     }
     body, html {
-        margin: 0; padding: 0; color:#5c5;
+        margin: 0; padding: 0; color:#8d7;
         font-size: 16px;
         background-color: #222;
     }
     h1, p {
-        margin: 10px 0;
+        margin: 0 0;
     }
+    p {margin: 10px 0;}
     h1 {
+        margin-top: 10px;
         font-size: 30px;
     }
     #demo {
         width:100vw; height: 90vh;
-        max-height: 90vw;
+        max-height: 80vw;
         position: relative;
     }
     #c {width:100%; height: 100%}
     #controls {
         position: absolute;
-        left: 20px;
-        bottom: 20px;
+        margin: 0 20px;
+        bottom: 0px;
         background-color: black;
+        line-height: 1.5;
     }
     #speed {
-        width: 180px;
+        width: 150px;
     }
     #speed_display {
         display: inline-block;
@@ -48,18 +51,94 @@
         max-width: 960px;
         padding: 0px 10px;
     }
+    a {
+        color: #fd8; /* Light green text */
+        text-decoration: none; /* No underline */
+    }
+    a:hover {
+        text-decoration: underline; /* Underline on hover */
+    }
+
+    #breakpoints {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        border: none;
+        background: #ccc;
+        cursor: pointer;
+        padding: 6px;
+        margin-left: 10px;
+        transition: background-color 0.3s;
+    }
+    #breakpoints.active {
+        background: #ff4444;
+    }
+    #breakpoints svg {
+        width: 100%;
+        height: 100%;
+        fill: white;
+    }
+
+    @keyframes jump {
+        0% { transform: translateY(0); }
+        50% { transform: translateY(-20px); }
+        100% { transform: translateY(0); }
+    }
+    .jump-once {
+        animation: jump 0.4s cubic-bezier(.17,.67,.44,1.43);
+    }    
+    ul {
+        padding-left: 20px;
+        margin-left: 0;
+    }
+
+    li {
+        margin-bottom: 10px;
+    }
+
+    .author {
+        font-size: 14px;
+        margin-top: 0px;
+    }
+
+    #video {
+        margin: 20px;
+    }
 </style>
 <div id="demo">
     <canvas id="c"></canvas>
     <div id="controls">
-        <div>Status</div>
+        <div id="phase">Status</div>
 
     Speed: <div id="speed_display"></div> <input id="speed" type="range" min="-5" max="12" value="0">
+    <button id="breakpoints" class="active" onclick="this.classList.toggle('active')">
+        <svg viewBox="0 0 24 24">
+          <path d="M2 5 v14l14-7z"/>
+          <path d="M17 3h2v18h-2z"/>
+        </svg>
+      </button>
     </div>
 </div>
 <main>
-    <h1>TinyTapeout 09 VGA</h1>
-    <p>This demo</p>
+    <h1>TT09 VGA CA</h1>
+    <p class="author">
+        by <a href="https://znah.net">Alexander Mordvintsev</a>
+    </p>
+    <p>
+        This is a gate-level simulation of my <a href="https://tinytapeout.com/">TinyTapeout</a> '09 submission running directly in your browser. The circuit occupies a single 160x100 μm tile on a multiproject chip and generates a 60fps 640x480 VGA signal that forms a scrolling animation of several <a href="https://mathworld.wolfram.com/ElementaryCellularAutomaton.html">elementary 1D cellular automata</a> rules. Most of the tile area is occupied by two 160-bit shift registers: one (left) stores the current image line, while another (right) stores the first line of the next frame (4th line of the current).
+    </p>
+    <p>
+        This demo combines a tiny custom WebAssembly gate-level <a href="https://github.com/znah/tt09/blob/main/gates.c">simulator</a> with a <a href="https://google.github.io/swissgl/">SwissGL</a>-based interactive visualization of gate activations. The overlay displays the content of the simulated VGA screen and the current ray position.
+    </p>
+    <p>Links:</p>
+    <ul>
+        <li><a href="https://github.com/znah/tt09-vga-ca">Project GitHub repository</a> (<a href="https://github.com/znah/tt09-vga-ca/blob/main/src/project.v">project.v</a>)</li>
+        <li><a href="https://github.com/znah/tt09">Demo GitHub repository</a></li>
+        <li><a href="https://tinytapeout.com/runs/tt09/tt_um_znah_vga_ca">TT09 tile</a></li>
+    </ul>
+
+    <iframe id="video" width="560" height="315" src="https://www.youtube-nocookie.com/embed/XtRncOmQN7c?si=HIwZzaOeo9nyTHsK" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+
 
 </main>
 <script>
@@ -91,9 +170,7 @@
         for (const name in CIRCUIT.gates) {
             main[name].set(CIRCUIT.gates[name]);
         }
-        console.log(main.update_all());
-        console.log(main.update_all());
-        console.log(main.update_all());
+        while (main.update_all());
     }
     init();
 
@@ -112,6 +189,30 @@
         glsl({row, ray:[x,y],
             VP:`XY.x,(ray.y+XY.y*0.5)/float(ViewSize.y)*2.0-1.0,0,1`,
             FP:`row(UV)`}, screen);
+    }
+
+    $('#phase').innerText = 'row 0: init';
+    function updateStatus(line) {
+        let status = 'copy the previous row';
+        if (line < 0 || line >= H) {
+            status = 'offscreen (skip)';
+        } else if (line == 0) {
+            status = 'recall the starting row';
+        } else if (line == 4) {
+            status = 'rule application + store the first row for the next frame'
+        } else if (line%4 == 0) {
+            status = 'apply CA rule';
+        }
+        $('#phase').innerText = `row ${line}: ${status}`;
+        const breakpoints = $('#breakpoints').classList.contains('active');
+        if (breakpoints && (line == 0 || line == 1 || line == 4)) {
+            $('#speed').value = 0;
+            $('#breakpoints').classList.remove('jump-once');
+            void $('#breakpoints').offsetWidth;
+            $('#breakpoints').classList.add('jump-once');            
+            return false;
+        }
+        return true;
     }
 
     function step() {
@@ -135,28 +236,32 @@
             }
             x += 1;
         }
+        let noBreak = true;
         if (prev_hsync && S[hsync]==0) {
             x = 0;
             sync_row();
             screen_row.fill(0);
             y += 1;
+            noBreak = updateStatus(y-33);
         }
         if (prev_vsync && S[vsync]==0) {
             x = 0;
             y = 0;
         }
         tick += 1;
+        return noBreak;
     }
 
-    const speed = $('#speed');
     let skip_n = 0;
     glsl.loop(({time})=>{
         glsl.adjustCanvas();
 
-        const step_n = Math.pow(2, speed.value);
+        const step_n = Math.pow(2, $('#speed').value);
         if (step_n >= 1) {
             $('#speed_display').textContent = step_n+'x';
-            for (let i=0; i<step_n; ++i) step();
+            for (let i=0; i<step_n; ++i) {
+                if (!step()) break;
+            }
         } else {
             $('#speed_display').textContent = `1/${1/step_n}x`;
             if (skip_n <= 0) {
@@ -165,7 +270,7 @@
             } else {
                 skip_n--;
             }   
-        } 
+        }
         sync_row();
 
         const state = glsl({}, {data:main?.state||null, size:[256, 16], format:'r8u', tag:'state'});
