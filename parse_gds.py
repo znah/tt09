@@ -228,7 +228,7 @@ def draw_net(fets, pin2wire, with_gates=True):
     power_wires = set([0,1])
     for pin, wire in pin2wire.items():
         if wire not in power_wires:
-            dot.node(f'{abs(wire)}', label='~'*(wire<0)+pin)
+            dot.node(f'{abs(wire)}', label='~'*(wire<0)+pin, style='filled')
     for i, fet in enumerate(fets):
         dot.node(f'fet{i}', label='', style='filled', shape='circle', 
                 fillcolor=colors[fet.type])
@@ -268,6 +268,35 @@ def get_wires(fets):
         for wire in [fet.gate, fet.a, fet.b]:
             wires.setdefault(wire, []).append(fet)
     return wires
+
+def classify_wires(fets):
+    wires = {'N':set(), 'P':set(), 'G':set()}
+    for fet in fets:
+        wires['G'].add(fet.gate)
+        wires[fet.type].update([fet.a, fet.b])
+    in_wires = wires['G'] - (wires['N'] | wires['P'])
+    out_wires = wires['N'] & wires['P']
+    wires2fets = get_wires(fets)
+    state_wires = set()
+    visited = {0:2, 1:2}
+    def dfs(i):
+        if i in visited:
+            if visited[i]==1 and i in out_wires:
+                state_wires.add(i)
+            return
+        visited[i] = 1
+        for fet in wires2fets[i]:
+            if fet.gate == i:
+                if fet.a in out_wires or fet.b <= 1:
+                    dfs(fet.a)
+                if fet.b in out_wires or fet.a <= 1:
+                    dfs(fet.b)
+            elif i not in out_wires:
+                dfs(fet.a if fet.a != i else fet.b)
+        visited[i] = 2
+    for i in in_wires:
+        dfs(i)
+    return {'in':in_wires, 'state':state_wires, 'out':out_wires}
 
 WIRE_0 = 0
 WIRE_1 = 1
@@ -349,11 +378,14 @@ class Cell:
         self.part_sets = connect_layers(self.layers)
         for part in self.pin2part.values():
             self.part_sets.add(part)
-        known_wires = {self.pin2part[name]:i for name, i in [('VGND', 0), ('VPWR', 1)]}
+        # [('VGND', 0), ('VPWR', 1)]
+        known_wires = {self.pin2part[name]:i for name, i in power_pins.items() 
+                       if name in self.pin2part}
         self.wire2parts, self.part2wire = self.part_sets.label_components(known_wires)
         self.pin2wire = {pin:self.part2wire[part] for pin, part in self.pin2part.items()}
                 
         self.fets = extract_fets(self.part2wire, self.layers)
+        self.wires = classify_wires(self.fets)
 
         #self.fets1, self.pin2wire1 = simplify(self.fets, self.pin2wire)
 
@@ -471,9 +503,6 @@ def export_circuit(top_cell, out_f):
         output_wire = outputs[0] or outputs[1]
         out_i = 0 if outputs[0] else 1
         
-        if output_wire == 573:
-            print(ref.properties[61], cell, output_wire)
-            print(cell.lut_bits[out_i])
         px, py = 0.3, 0.3
         (x0, y0), (x1, y1) = ref.get_bounding_box()
         wire_rects += [x0+px, y0+py, x1-px, y1-py]
@@ -506,7 +535,8 @@ def export_circuit(top_cell, out_f):
             export['inputs'].extend(gate_inputs.get(i, []))
             export['outputs'].extend(gate_outputs.get(i, []))
 
-    out_f.write('pins:%s,\n' % str(top_cell.pin2wire))
+    out_f.write('bbox:%s,\n' % top_cell.bbox.ravel().tolist())
+    out_f.write('pins:%s,\n' % top_cell.pin2wire)
     out_f.write('wire_rects:[%s],\n' % (','.join('%.3f'%v for v in wire_rects)))
     out_f.write('wire_infos:[%s],\n' % (','.join('%d'%v for v in wire_infos)))
     out_f.write('gates:%s,\n'%str(dict(export)))
@@ -515,13 +545,14 @@ def export_circuit(top_cell, out_f):
 pdk_root = '/Users/moralex/ttsetup/pdk/volare/sky130/versions/bdc9412b3e468c102d01b7cf6337be06ec6e9c9a/'
 pdk_gds = pdk_root+'sky130A/libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds'    
 
-vga_gds = 'GDS_logs/runs/wokwi/final/gds/tt_um_znah_vga_ca.gds'
+#vga_gds = 'GDS_logs/runs/wokwi/final/gds/tt_um_znah_vga_ca.gds'
+vga_gds = 'GDS_logs_drop/runs/wokwi/final/gds/tt_um_rejunity_vga_test01.gds'
 
 if __name__ == '__main__':
     gds = gdspy.GdsLibrary().read_gds(vga_gds)
     cells = analyse_cells(gds)
-    cells['sky130_fd_sc_hd__and3_1'].print_table()
-    cells['sky130_fd_sc_hd__conb_1'].print_table()
+    # cells['sky130_fd_sc_hd__and3_1'].print_table()
+    # cells['sky130_fd_sc_hd__conb_1'].print_table()
     print('Top cell analysis ...')
     top_cell = Cell(gds.top_level()[0], cells)
     print('Export ...')

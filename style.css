@@ -1,0 +1,81 @@
+*, *::before,*::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    font-family: Verdana, Geneva, Tahoma, sans-serif
+}
+body, html {
+    margin: 0; padding: 0; color:#8d7;
+    font-size: 16px;
+    background-color: #222;
+}
+h1, p {
+    margin: 0 0;
+}
+p {margin: 10px 0;}
+h1 {
+    margin-top: 10px;
+    font-size: 30px;
+}
+#demo {
+    width:100vw; height: 90vh;
+    max-height: 80vw;
+    position: relative;
+}
+#c {width:100%; height: 100%}
+#controls {
+    position: absolute;
+    margin: 0 20px;
+    bottom: 0px;
+    background-color: rgba(0,0,0,0.5);
+    line-height: 1.4;
+}
+#phase {
+    margin-bottom: 6px;
+}    
+#speed {
+    width: 200px;
+}
+#speed_display {
+    display: inline-block;
+    width: 50px;
+    text-align: right;
+}
+main {
+    margin: 0 auto;  /* Center horizontally */
+    max-width: 960px;
+    padding: 0px 10px;
+}
+a {
+    color: #fd8; /* Light green text */
+    text-decoration: none; /* No underline */
+}
+a:hover {
+    text-decoration: underline; /* Underline on hover */
+}
+@keyframes flash {
+    0% { text-shadow: none; }
+    50% {  text-shadow: 0 0 5px #0f0, 0 0 10px #0f0, 0 0 15px #0f0, 0 0 20px #0f0; }
+    100% {  text-shadow: none; }
+}
+.flash-once {
+    animation: flash 0.4s ease-in-out;
+}    
+ul {
+    padding-left: 20px;
+    margin-left: 0;
+}
+
+li {
+    margin-bottom: 10px;
+}
+
+.author {
+    font-size: 14px;
+    margin-top: 0px;
+}
+
+#video {
+    margin: 10px;
+    max-width: 90vw;
+}

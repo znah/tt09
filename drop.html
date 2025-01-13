@@ -1,27 +1,21 @@
 <!DOCTYPE html>
-<title>TinyTapeout VGA 1D Cellular Automata Simulation</title>
+<title>TinyTapeout VGA "Drop" simulation</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="author" content="Alexander Mordvintsev">
 <meta name="robots" content="index, follow">
 <meta name="language" content="English">
-<!-- Twitter -->
-<meta property="twitter:card" content="summary_large_image">
-<meta property="twitter:url" content="https://znah.net/tt09">
-<meta property="twitter:title" content="TinyTapeout VGA 1D Cellular Automata Simulation">
-<meta property="twitter:description" content="TinyTapeout VGA 1D Cellular Automata Simulation">
-<meta property="twitter:image" content="https://znah.net/tt09/card.jpg">
 
 <script src="https://cdn.counter.dev/script.js" data-id="8bf0ceb7-d869-4a63-ba6b-32b18ec544f1"></script>
 <link rel="stylesheet" href="style.css">
 <div id="demo">
     <canvas id="c"></canvas>
     <div id="controls">
-        <div id="phase">phase</div>
+        <!-- <div id="phase">phase</div>
         <div id="breakpoints_div">
             <input type="checkbox" id="breakpoints" name="breakpoints" checked />
             <label for="breakpoints">slowdown at rows 0,1,4</label>
-        </div>
+        </div> -->
         <div>
             Speed: <div id="speed_display"></div>
             <input id="speed" type="range" min="-5" max="12" value="0">
@@ -29,32 +23,27 @@
     </div>
 </div>
 <main>
-    <h1>TT09 VGA CA</h1>
+    <h1>TT09 VGA "Drop"</h1>
     <p class="author">
-        by <a href="https://znah.net">Alexander Mordvintsev</a>
-    </p>
-    <p>
-        This is a gate-level simulation of my <a href="https://tinytapeout.com/">TinyTapeout</a> '09 submission running directly in your browser. The circuit occupies a single 160x100 μm tile on a multiproject chip and generates a 60fps 640x480 VGA signal that forms a scrolling animation of several <a href="https://mathworld.wolfram.com/ElementaryCellularAutomaton.html">elementary 1D cellular automata</a> rules. Most of the tile area is occupied by two 160-bit shift registers: one (left) stores the current image line, while another (right) stores the first line of the next frame (4th line of the current).
+        demo by <a href="https://github.com/rejunity">ReJ</a>, web simulation by <a href="https://znah.net">Alexander Mordvintsev</a>
     </p>
     <p>
         This demo combines a tiny custom WebAssembly gate-level <a href="https://github.com/znah/tt09/blob/main/gates.c">simulator</a> with a <a href="https://google.github.io/swissgl/">SwissGL</a>-based interactive visualization of gate activations. The overlay displays the content of the simulated VGA screen and the current ray position.
     </p>
     <p>Links:</p>
     <ul>
-        <li><a href="https://github.com/znah/tt09-vga-ca">ASIC design repository</a> (<a href="https://github.com/znah/tt09-vga-ca/blob/main/src/project.v">project.v</a>)</li>
-        <li><a href="https://github.com/znah/tt09">Demo page repository</a></li>
-        <li><a href="https://tinytapeout.com/runs/tt09/tt_um_znah_vga_ca">TinyTapeout'09 tile</a></li>
-        <li><a href="https://znah.net/tt09-vga-ca/">Circuit 3D view</a></li>
-        <li><a href="https://news.ycombinator.com/item?id=42631629">Hacker News discussion</a></li>
+        <li><a href="https://github.com/rejunity/tt08-vga-drop">ASIC design repository</a></li>
+        <li><a href="https://tinytapeout.com/runs/tt09/tt_um_rejunity_vga_test01">TinyTapeout'09 tile</a></li>
+        <li><a href="https://www.youtube.com/watch?v=jJBU0J2ceMM">Drop YouTube video</a></li>
+        <li><a href="https://znah.net/tt09">Original web simulation demo (1D CA)</a></li>
     </ul>
 
-    <iframe id="video" width="560" height="315" src="https://www.youtube-nocookie.com/embed/XtRncOmQN7c?si=HIwZzaOeo9nyTHsK" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
-
+    <iframe id="video" width="560" height="315" src="https://www.youtube.com/embed/jJBU0J2ceMM?si=0yXt-ZCjY2EmMDfa" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
 
 </main>
 
 <script src="swissgl.js"></script>
-<script src="circuit.js"></script>
+<script src="circuit_drop.js"></script>
 <script src="util.js"></script>
 
 <script>
@@ -107,29 +96,29 @@
             FP:`row(UV)`}, screen);
     }
 
-    $('#phase').innerText = 'row 0: init';
-    function updateStatus(line) {
-        let status = 'copy the previous row';
-        if (line < 0 || line >= H) {
-            status = 'offscreen (skip)';
-        } else if (line == 0) {
-            status = 'recall the starting row';
-        } else if (line == 4) {
-            status = 'rule application + store the first row for the next frame'
-        } else if (line%4 == 0) {
-            status = 'apply CA rule';
-        }
-        $('#phase').innerText = `row ${line}: ${status}`;
-        const breakpoints = $('#breakpoints').checked;
-        if (breakpoints && (line == 0 || line == 1 || line == 4)) {
-            $('#speed').value = 0;
-            $('#breakpoints_div').classList.remove('flash-once');
-            void $('#breakpoints_div').offsetWidth;
-            $('#breakpoints_div').classList.add('flash-once');            
-            return false;
-        }
-        return true;
-    }
+    // $('#phase').innerText = 'row 0: init';
+    // function updateStatus(line) {
+    //     let status = 'copy the previous row';
+    //     if (line < 0 || line >= H) {
+    //         status = 'offscreen (skip)';
+    //     } else if (line == 0) {
+    //         status = 'recall the starting row';
+    //     } else if (line == 4) {
+    //         status = 'rule application + store the first row for the next frame'
+    //     } else if (line%4 == 0) {
+    //         status = 'apply CA rule';
+    //     }
+    //     $('#phase').innerText = `row ${line}: ${status}`;
+    //     const breakpoints = $('#breakpoints').checked;
+    //     if (breakpoints && (line == 0 || line == 1 || line == 4)) {
+    //         $('#speed').value = 0;
+    //         $('#breakpoints_div').classList.remove('flash-once');
+    //         void $('#breakpoints_div').offsetWidth;
+    //         $('#breakpoints_div').classList.add('flash-once');            
+    //         return false;
+    //     }
+    //     return true;
+    // }
 
     function step() {
         if (!main) return;
@@ -158,7 +147,7 @@
             sync_row();
             screen_row.fill(0);
             y += 1;
-            noBreak = updateStatus(y-33);
+            //noBreak = updateStatus(y-33);
         }
         if (prev_vsync && S[vsync]==0) {
             x = 0;
