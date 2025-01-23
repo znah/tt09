@@ -44,14 +44,22 @@ const PAD = 48;
 const W = 640+PAD*2, H = 480+PAD*2;
 
 class VGASimulator {
-    constructor(glsl, circuit_json) {
+    static async init(glsl) {
+        const wasm = await WebAssembly.instantiateStreaming(fetch('gates.wasm'));
+        return new VGASimulator(glsl, wasm);
+    }
+
+    constructor(glsl, wasm) {
         this.glsl = glsl;
-        this.circuit_json = circuit_json;
-        this.pins = circuit_json.pins;
-        this.main = null;
+        this.main = prepareWASM(wasm.instance);
+    }
+    
+    load_circuit(json) {
+        this.pins = json.pins;
+        this.bbox = json.bbox;
         this.geom  = {
-            rects: array2tex(glsl, circuit_json.wire_rects, 'rgba32f', 'rects'),
-            infos: array2tex(glsl, circuit_json.wire_infos, 'rg32i', 'infos'),
+            rects: array2tex(glsl, json.wire_rects, 'rgba32f', 'rects'),
+            infos: array2tex(glsl, json.wire_infos, 'rg32i', 'infos'),
         };
         this.out_wires = Array(8).fill(1).map((_,i)=>this.pins[`uo_out[${i}]`]);
 
@@ -60,15 +68,11 @@ class VGASimulator {
 
         this.ray = [44, 33];
         this.tick = 0;
-    }
 
-    async init() {
-        const wasm = await WebAssembly.instantiateStreaming(fetch('gates.wasm'));
-        this.main = prepareWASM(wasm.instance);
-        const gates_json = this.circuit_json.gates;
-        this.main.gate_n[0] = gates_json.luts.len;
-        for (const name in gates_json) {
-            const d = gates_json[name]
+        const gates = json.gates;
+        this.main.gate_n[0] = gates.luts.len;
+        for (const name in gates) {
+            const d = gates[name]
             const binary = atob(d.data);
             const u8 = new Uint8Array(binary.length);
             for (let i=0; i<binary.length; ++i) {
@@ -77,11 +81,8 @@ class VGASimulator {
             const a = new({'uint32':Uint32Array, 'uint64':BigUint64Array}[d.dtype])(u8.buffer);
             this.main[name].set(a);
         }
-        while (this.main.update_all());
-        // console.time('bench')
-        // for (let i=0; i<1000_000; ++i) step(true);
-        // console.timeEnd('bench')
-    }
+        while (this.main.update_all());      
+    }    
 
     sync_row() {
         const {glsl, ray} = this;
@@ -93,7 +94,6 @@ class VGASimulator {
 
     step(rowCallback) {
         const {main, tick, pins, screen_row} = this;
-        if (!main) return;
         const clk = tick&1;
         const rst_n = (tick>9) & 1; // ???
         const [R1, G1, B1, vsync, R0, G0, B0, hsync] = this.out_wires.reverse();
@@ -148,7 +148,7 @@ class VGASimulator {
             return q*(p-box.xy)-s + justify*(q-s+1.0);
         }`;
 
-        glsl({cellBox:this.circuit_json.bbox, ...geom, state,
+        glsl({cellBox:this.bbox, ...geom, state,
             Grid:geom.rects.size, Blend:'s+d', Inc:inc+`
             uniform isampler2D infos;
             uniform usampler2D state;`, VP:`

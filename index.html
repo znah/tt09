@@ -54,7 +54,6 @@
 </main>
 
 <script src="swissgl.js"></script>
-<script src="circuit.js"></script>
 <script src="sim.js"></script>
 
 <script>
@@ -63,9 +62,17 @@
     const canvas = $('#c');
     const glsl = SwissGL(canvas);
 
-    let sim = new VGASimulator(glsl, CIRCUIT);
+    let sim;
     let skip_n = 0;
     let needBreak = false;
+    async function init() {
+        sim = await VGASimulator.init(glsl);
+        const response = await fetch('circuit.json');
+        const data = await response.json();        
+        sim.load_circuit(data);
+        glsl.loop(frame);
+    }
+
     
     $('#phase').innerText = 'row 0: init';
     function updateStatus(line) {
@@ -112,9 +119,5 @@
         sim.draw(step_n);
     }
 
-    async function init() {
-        await sim.init();
-        glsl.loop(frame);
-    }
     init();
 </script>

@@ -128,7 +128,7 @@ def connect_layers(layers: Layers) -> DisjointSets:
             parts.merge(Part(a, a_idx), Part(b, b_idx))
 
     wires = [layerstack[i, 20]['name'] for i in range(66, 72+1)]
-    vias = [layerstack[i, 44]['name'] for i in range(66, 72)]
+    vias  = [layerstack[i, 44]['name'] for i in range(66, 72)]
     if 'sd' in layers:
         for i in range(len(layers['sd'].geometries)):
             parts.add(('sd', i))
@@ -435,7 +435,7 @@ def export_wires(top_cell):
             wire_infos += [wire, z]
     return wire_rects, wire_infos
 
-def export_circuit(top_cell, out_f):
+def export_circuit(top_cell, out_fn):
     wire_rects, wire_infos = export_wires(top_cell)
 
     gate_luts, gate_inputs, gate_outputs = {}, {}, {}
@@ -491,15 +491,18 @@ def export_circuit(top_cell, out_f):
         export[k] = {'len': len(arr), 'data':b64, 'dtype':arr.dtype.name}
         print(f'{k}: {len(arr)}')
 
-    out_f.write('bbox:%s,\n' % top_cell.bbox.ravel().tolist())
-    out_f.write('pins:%s,\n' % top_cell.pin2wire)
-    out_f.write('wire_rects:[%s],\n' % (','.join('%.3f'%v for v in wire_rects)))
-    out_f.write('wire_infos:[%s],\n' % (','.join('%d'%v for v in wire_infos)))
-    out_f.write('gates:%s,\n'%str(dict(export)))
+    with open(out_fn, 'w') as f:
+        f.write('{')
+        f.write('"bbox":%s,\n' % top_cell.bbox.ravel().tolist())
+        f.write('"pins":%s,\n' % json.dumps(top_cell.pin2wire))
+        f.write('"wire_rects":[%s],\n' % (','.join('%.3f'%v for v in wire_rects)))
+        f.write('"wire_infos":[%s],\n' % (','.join('%d'%v for v in wire_infos)))
+        f.write('"gates":%s\n'%json.dumps(export))
+        f.write('}')
     print(input_n_stats.most_common())
 
 
-# project = '09/tt_um_znah_vga_ca'         # 😎
+project = '09/tt_um_znah_vga_ca'         # 😎
 # project = '09/tt_um_rejunity_vga_test01' # drop
 # project = '09/tt_um_2048_vga_game'       # shows a grid and 2048
 # project = '08/tt_um_a1k0n_nyancat'       # 08/😎,  09/ doesn't work (only draws one line)
@@ -509,7 +512,7 @@ def export_circuit(top_cell, out_f):
 # project = '09/tt_um_toivoh_demo'         # TODO 2x clock
 # project = '09/tt_um_warp'                # not sure if vsync is always correct
 # project = '08/tt_um_johshoff_metaballs'  # I see one ball
-project = '08/tt_um_top'                   # 🔥
+# project = '08/tt_um_top'                   # 🔥
 
 
 tt_index, project = project.split('/')
@@ -545,7 +548,4 @@ if __name__ == '__main__':
     print('Top cell analysis ...')
     top_cell = Cell(gds.top_level()[0], cells)
     print('Export ...')
-    with open('circuit.js', 'w') as f:
-        f.write('const CIRCUIT = {\n')
-        export_circuit(top_cell, f)
-        f.write('};\n')
+    export_circuit(top_cell, 'circuit.json')
