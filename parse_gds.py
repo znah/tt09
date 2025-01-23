@@ -2,12 +2,15 @@ import numpy as np
 import drawsvg as draw
 import gdspy
 import shapely
-from shapely.geometry import Point, Polygon, MultiPolygon, GeometryCollection
+from shapely.geometry import Point, Polygon, MultiPolygon, GeometryCollection, box
 from shapely.strtree import STRtree
 from IPython.display import HTML, display, SVG
+import requests
 import io
+from pathlib import Path
 from collections import Counter, defaultdict
 from collections import namedtuple
+import base64
 from typing import Any
 from graphviz import Digraph
 import json
@@ -171,57 +174,6 @@ def extract_fets(part2wire: dict[Part,int], layers: Layers) -> set[FET]:
         fets.add(FET(fet_type, gate, a, b))
     return fets
 
-def merge_inverters(fets: set[FET], pin2wire: dict[str,int]):
-    rename, remove = {}, []
-    for fet in fets:
-        if fet.type != 'N' or fet.a != 0:
-            continue
-        pfet = FET('P', fet.gate, 1, fet.b)
-        if pfet not in fets:
-            continue
-        remove += [fet, pfet]
-        rename[fet.b] = -fet.gate
-    for k in rename:
-        k1 = rename[k]
-        while abs(k1) in rename:
-            k1 = -rename[abs(k1)]
-        rename[k] = k1
-    ren = lambda a:rename.get(a,a)
-    fets = set(FET(f.type, ren(f.gate), ren(f.a), ren(f.b)) 
-               for f in (fets-set(remove)))
-    pin2wire = {k:ren(v) for k, v in pin2wire.items()}
-    return fets, pin2wire
-
-def merge_gates(fets: set[FET], pin2wire: dict[str,int]):
-    pinned_wires = set(pin2wire.values())
-    wire2fets = defaultdict(list)
-    for fet in fets:
-        for i in [fet.gate, fet.a, fet.b]:
-            wire2fets[i].append(fet)
-    merges = DisjointSets()
-    for wire in list(wire2fets):
-        if len(wire2fets[wire]) != 2 or wire in pinned_wires:
-            continue
-        f1, f2 = wire2fets[wire]
-        if f1.type != f2.type or wire in [f1.gate, f2.gate]:
-            continue
-        merges.merge(f1, f2)
-    fets = fets - set(merges.nodes)
-    for merged in merges.label_components()[0].values():
-        gates = tuple(sorted([f.gate for f in merged]))
-        cnt = Counter(sum([(f.a, f.b) for f in merged], ()))
-        a, b = sorted([wire for wire in cnt if cnt[wire] == 1])
-        fet = FET(merged[0].type, gate=gates, a=a, b=b)
-        fets.add(fet)
-    return fets
-
-def simplify(fets, pin2wire, inverters=True, gates=True):
-    if inverters:
-        fets, pin2wire = merge_inverters(fets, pin2wire)
-    if gates:
-        fets = merge_gates(fets, pin2wire)
-    return fets, pin2wire
-
 def draw_net(fets, pin2wire, with_gates=True):
     dot = Digraph(graph_attr={'rankdir':'LR'}, node_attr={'shape':'square'}, engine='dot') #neato dot
     colors = {'N':'lightgreen', 'P':'coral'}
@@ -247,20 +199,6 @@ def draw_net(fets, pin2wire, with_gates=True):
 power_pins = {'VGND':0, 'VPWR':1, 'VNB':0, 'VPB':1, 
               'KAPWR':1, 'VPWRIN':1, 'LOWLVPWR':1}
 
-def guess_inouts(fets, pin2wire):
-    has_gate, has_diff = set(), set()
-    for fet in fets:
-        has_gate.add(fet.gate)
-        has_diff.update((fet.a, fet.b))
-    inputs, outputs = {}, {}
-    for pin, wire in sorted(pin2wire.items()):
-        if pin in power_pins:
-            continue
-        if wire in has_gate and wire not in has_diff:
-            inputs[pin] = wire
-        elif wire in has_diff or wire <= 1: # VGND and VPWR are outputs
-            outputs[pin] = wire
-    return inputs, outputs
 
 def get_wires(fets):
     wires = {}
@@ -269,16 +207,15 @@ def get_wires(fets):
             wires.setdefault(wire, []).append(fet)
     return wires
 
-def classify_wires(fets):
+def classify_wires(fets, wires2fets):
     wires = {'N':set(), 'P':set(), 'G':set()}
     for fet in fets:
         wires['G'].add(fet.gate)
         wires[fet.type].update([fet.a, fet.b])
     in_wires = wires['G'] - (wires['N'] | wires['P'])
-    out_wires = wires['N'] & wires['P']
-    wires2fets = get_wires(fets)
+    out_wires = (wires['N'] & wires['P']) | {0,1}
     state_wires = set()
-    visited = {0:2, 1:2}
+    visited = {0:2, 1:2}  # power wires
     def dfs(i):
         if i in visited:
             if visited[i]==1 and i in out_wires:
@@ -296,73 +233,50 @@ def classify_wires(fets):
         visited[i] = 2
     for i in in_wires:
         dfs(i)
-    return {'in':in_wires, 'state':state_wires, 'out':out_wires}
+    return {'in':in_wires, 'state':state_wires,
+            'out':out_wires, 'gate':wires['G']}
 
-WIRE_0 = 0
-WIRE_1 = 1
-WIRE_FLOAT = 2
-WIRE_UNDEFINED = 3
-WIRE_SHORT = 4
 
-def build_truth_table(fets: set[FET], inputs, outputs):
+def build_signals(wire2fets, inputs, to_resolve):
     '''
-    inputs, outputs: dict[pin, wire_idx]
+    wire2fets: {wire: [fet,...],
+    inputs: {wire,...}
+    to_resolve: {wire,...}
+    
+    return: 
+        resolved: bool
+        signals: [wire_n,2,case_n]
     '''
+
     input_n = len(inputs)
-    assert input_n <= 6
-    wires = get_wires(fets)
-    wire_n = max(wires.keys())+1 if wires else 2
-
-    case_n = 2**input_n
-    case_i = np.arange(case_n, dtype=np.uint64)
-    input_cases = (case_i >> np.arange(input_n,  dtype=np.uint64)[:,None])&1
-    input_bits = np.uint64(input_cases*2**case_i).sum(1)
-
-    mask = np.uint64(2**case_n-1)
-    signals = np.zeros([2, wire_n], np.uint64)
-    input_idx = list(inputs.values())
-    signals[0, 0] = signals[1, 1] = mask  # VGND VPWR
-    signals[1, input_idx] = input_bits
-    signals[0, input_idx] = (~input_bits)&mask
-
-    queue = list(input_idx)
+    wire_n = max(wire2fets.keys())+1 if wire2fets else 2
+    case_n = 1<<input_n
+    signals = np.zeros([wire_n,2,case_n], np.uint8)
+    signals[0,0] = signals[1,1] = 1
+    I = np.arange(case_n)
+    inputs = {wire : np.array([1-(I>>i)&1, (I>>i)&1], np.uint8)
+                  for i, wire in enumerate(inputs)}
+    queue = set(inputs)
     while queue:
         wire = queue.pop()
-        for fet in wires[wire]:
+        for fet in wire2fets[wire]:
             gate_level = int(fet.type=='N')
-            level = signals[1-gate_level]
-            gate = signals[gate_level][fet.gate]
+            gate_open = inputs.get(fet.gate, signals[fet.gate])[gate_level]
+            level = signals[:,1-gate_level]
             a, b = level[fet.a], level[fet.b]
-            c = (a|b)&gate
+            c = (a|b)&gate_open
             a1, b1 = a|c, b|c
-            if a!=a1:
-                queue.append(fet.a)
-                level[fet.a] = a1
-            if b!=b1:
-                queue.append(fet.b)
-                level[fet.b] = b1
-    
-    output_idx = list(outputs.values())
-    out_signals = (signals[:,output_idx,None] >> case_i)&1
-    lut_bits = signals[1, output_idx]
-    results = out_signals[1]
-
-    defined = signals[0] ^ signals[1]
-    # check if all outputs are defined
-    if (defined[output_idx] == mask).all():
-        return input_cases, results, lut_bits
-    
-    results[(out_signals[0]==0) & (out_signals[1]==0)] = WIRE_UNDEFINED
-    results[(out_signals[0]==1) & (out_signals[1]==1)] = WIRE_SHORT
-    # undefined wires that are connected to defined (but closed) FETs
-    # are set to the 'floating' state (tri-state buffers)
-    for i, out_wire in enumerate(output_idx):
-        src_gates = [fet.gate for fet in wires[out_wire] if fet.gate != out_wire]
-        gates_defined = np.bitwise_and.reduce(defined[src_gates])
-        gates_defined = ((gates_defined >> case_i)&1) == 1
-        results[i, (results[i]==WIRE_UNDEFINED) & gates_defined] = WIRE_FLOAT
-    lut_bits = signals[1, output_idx]
-    return input_cases, results, lut_bits
+            if (a!=a1).any():
+                queue.add(fet.a)
+                a[:] = a1
+            if (b!=b1).any():
+                queue.add(fet.b)
+                b[:] = b1
+    for wire, input_bits in inputs.items():
+        undef_mask = ~signals[wire].any(0)
+        signals[wire][:,undef_mask] = input_bits[:,undef_mask]
+    resolved = signals[list(to_resolve)].any(1).all()
+    return resolved, signals
 
 class Cell:
     def __init__(self, gds_cell, cell_library):
@@ -372,28 +286,56 @@ class Cell:
         self.short_name = gds_cell.name.split('__')[-1]
         self.bbox = gds_cell.get_bounding_box()
 
+        # process geometry
         self.layers = extract_layers(gds_cell)
         self.pin2part = find_pins(self.layers, gds_cell)
-        self.part2pin = {v:k for k,v in self.pin2part.items()}  # TODO: multiple pins? 
         self.part_sets = connect_layers(self.layers)
         for part in self.pin2part.values():
             self.part_sets.add(part)
-        # [('VGND', 0), ('VPWR', 1)]
         known_wires = {self.pin2part[name]:i for name, i in power_pins.items() 
                        if name in self.pin2part}
         self.wire2parts, self.part2wire = self.part_sets.label_components(known_wires)
         self.pin2wire = {pin:self.part2wire[part] for pin, part in self.pin2part.items()}
-                
+
+        # analyse circuit
         self.fets = extract_fets(self.part2wire, self.layers)
-        self.wires = classify_wires(self.fets)
+        self.wires2fets = get_wires(self.fets)
+    
+        wire_by_type = classify_wires(self.fets, self.wires2fets)
+        to_resolve = wire_by_type['out'] & wire_by_type['gate']
+        resolved, signals = build_signals(
+            self.wires2fets, wire_by_type['in'], to_resolve)
+        if resolved and wire_by_type['state']:
+            # Full-Adder cell is the only case where my cycle detection heuristics
+            # gives a false positive. We can rule out this case by checking if
+            # cell is resolved without knowing the state of the detected wire
+            wire_by_type['state'] = {}
+            print('false stateful:', self.short_name, ' - resolved')   
+        if not resolved:
+            wire_by_type['in'] |= wire_by_type['state']
+            resolved, signals = build_signals(
+                self.wires2fets, wire_by_type['in'], to_resolve)
+        
+        self.wire_by_type = wire_by_type
+        self.signals = signals
+        self.resolved = resolved
+        self.lut_cache = {}
 
-        #self.fets1, self.pin2wire1 = simplify(self.fets, self.pin2wire)
-
-        self.input_wires, self.output_wires = guess_inouts(
-            self.fets, self.pin2wire)
-        self.lut_in, self.lut_out, self.lut_bits = build_truth_table(
-            self.fets, self.input_wires, self.output_wires)
-        self.resolved = (self.lut_out<=WIRE_FLOAT).all()
+    def get_lut(self, out_wire):
+        if out_wire in self.lut_cache:
+            return self.lut_cache[out_wire]
+        inputs = list(self.wire_by_type['in'])
+        lut = self.signals[out_wire][1].reshape((2,)*len(inputs)).T
+        active_inputs = []
+        for axis in range(lut.ndim):
+            if not np.diff(lut, axis=axis).any():
+                lut = lut.take([0], axis)
+            else:
+                active_inputs.append(inputs[axis])
+        lut = lut.T.ravel()
+        lut_bits = (np.uint64(lut)<<np.arange(len(lut), dtype=np.uint64)).sum()
+        self.lut_cache[out_wire] = active_inputs, lut, lut_bits
+        return active_inputs, lut, lut_bits
 
     def __repr__(self):
         return f'[{self.short_name}]'
@@ -402,35 +344,47 @@ class Cell:
         layer, idx = part
         return self.layers[layer].geometries[idx]
     
-    def print_table(self):
-        print(f'-- {self.short_name} --')
-        print(f'[{" ".join(self.input_wires.keys())}] [{" ".join(self.output_wires.keys())}]')
-        for i, o in zip(self.lut_in.T, self.lut_out.T):
-            print(i, o)
+    def print_lut(self, out_wire=None):
+        wire2pin = {v:k for k, v in self.pin2wire.items()}
+        if out_wire is None:
+            outs = (self.wire_by_type['out']-{0,1}) & set(wire2pin)
+            assert outs, "Can't find an output wire"
+            out_wire = outs.pop()
+        inputs, lut, _ = self.get_lut(out_wire)
+        n = len(inputs)
+        label = lambda wire:wire2pin.get(wire, str(wire))
+        print(" ".join(map(label, inputs)), '|', label(out_wire))
+        for i, o in zip((np.c_[:1<<n]>>np.r_[:n])&1, lut):
+            print(i, '|', o)
 
-    def connect_pins(self, ref, pin_wires):
+    def connect_child(self, ref):
+        ref_box = box(*ref.get_bounding_box().ravel())
+        ox, oy = ref.origin
         cell = self.cell_library[ref.ref_cell.name]
-        parent_wires = [None] * len(pin_wires)
-        for i, wire in enumerate(pin_wires):
-            for part in cell.wire2parts[wire]:
-                lid, part_idx = part
-                if lid not in ['li1', 'met1']:
-                    continue
-                geom = cell.layers[lid].geometries[part_idx]
-                if ref.rotation:
-                    geom = shapely.affinity.rotate(geom, ref.rotation, origin=(0,0))
+        cell2top = {}
+        for layer in ['li1', 'met1']:
+            top_layer = self.layers[layer]
+            for top_part in top_layer.query(ref_box, 'intersects'):
+                top_wire = self.part2wire[layer, top_part]
+                if top_wire <= 1:
+                    continue  # skip power wires
+                top_geom = top_layer.geometries[top_part]
+                top_geom = shapely.affinity.translate(top_geom, -ox, -oy)
                 if ref.x_reflection:
-                    geom = shapely.affinity.scale(geom, 1, -1, origin=(0,0))
-                geom = shapely.affinity.translate(geom, *ref.origin)
-                match_idx = self.layers[lid].query(geom, "intersects")
-                if len(match_idx) != 1:
+                    top_geom = shapely.affinity.scale(top_geom, 1, -1, origin=(0,0))
+                if ref.rotation:
+                    top_geom = shapely.affinity.rotate(top_geom, ref.rotation, origin=(0,0))
+                cell_parts = cell.layers[layer].query(top_geom, 'intersects')
+                if len(cell_parts) == 0:
                     continue
-                parent_wires[i] = self.part2wire[lid, match_idx[0]]
-        return parent_wires
+                cell_wires = set(cell.part2wire[layer, cell_part] for cell_part in cell_parts)
+                assert len(cell_wires) == 1
+                cell2top[cell_wires.pop()] = top_wire
+        return cell2top
 
 
 def analyse_cells(gds):
-    resolved, stateful = [], []
+    stateless, stateful, unresolved = [], [], []
     cells = {}
     for cell_name, gds_cell in gds.cells.items():
         short = cell_name.split('__')[-1]
@@ -439,16 +393,23 @@ def analyse_cells(gds):
             print('- skipping')
             continue
         cells[cell_name] = cell = Cell(gds_cell, cells)
-        (resolved if cell.resolved else stateful).append(short)
+        if not cell.resolved:
+            unresolved.append(short)
+        elif cell.wire_by_type['state']:
+            stateful.append(short)
+        else:
+            stateless.append(short)
     print('\r', end='')
     def format_stat(names):
         n = len(names)
         names = Counter([s.rsplit('_', 1)[0] for s in names])
         names = [f'{s}*{n}' if n>1 else s for s, n in names.items()]
         return f'({n}) : ' + ', '.join(names)
-    print('resolved', format_stat(resolved), '\n')
-    print('stateful?', format_stat(stateful), '\n')
+    print('stateless', format_stat(stateless), '\n')
+    print('stateful', format_stat(stateful), '\n')
+    print('unresolved', format_stat(unresolved), '\n')
     return cells
+
 
 def export_wires(top_cell):
     wire_rects = []
@@ -467,7 +428,7 @@ def export_wires(top_cell):
             assert(len(idx) == 1)
             part = (layer_name, idx[0])
             wire = top_cell.part2wire.get(part, -1)
-            if wire <= 1:
+            if wire <= 1:  # skip power grid
                 continue
             (x0, y0), (x1, y1) = q.min(0), q.max(0)
             wire_rects += [x0, y0, x1, y1]
@@ -478,6 +439,7 @@ def export_circuit(top_cell, out_f):
     wire_rects, wire_infos = export_wires(top_cell)
 
     gate_luts, gate_inputs, gate_outputs = {}, {}, {}
+    input_n_stats = Counter()
     def set_gate(inputs, output, lut):
         output = int(output)
         inputs = [int(a) for a in inputs]
@@ -485,46 +447,35 @@ def export_circuit(top_cell, out_f):
         gate_inputs[output] = inputs
         for i in inputs:
             gate_outputs.setdefault(i, []).append(output)
+        input_n_stats[len(inputs)] += 1
 
-    LUT_DLATCH_PE = 0b_10111000
-    LUT_DLATCH_NE = 0b_11100010
-
+    next_wire = len(top_cell.wire2parts)
     for wire in top_cell.pin2wire.values():
         set_gate([wire], wire, 0b10)
 
-    next_wire = len(top_cell.wire2parts)
     for ref in top_cell.gds_cell.references:
         cell = top_cell.cell_library[ref.ref_cell.name]
-        inputs = top_cell.connect_pins(ref, cell.input_wires.values())
-        outputs = top_cell.connect_pins(ref, cell.output_wires.values())
-        if not any(outputs):
+        cell2top = top_cell.connect_child(ref)
+        outputs = set(cell2top) & cell.wire_by_type['out']
+        if not outputs:
             continue
-        assert None not in inputs
-        output_wire = outputs[0] or outputs[1]
-        out_i = 0 if outputs[0] else 1
+        
+        hidden_state = cell.wire_by_type['state'] - set(cell2top)
+        for out_wire in hidden_state:
+            cell2top[out_wire] = next_wire
+            next_wire += 1
+        for out_wire in hidden_state | outputs:
+            out_wire_global = cell2top[out_wire]
+            active_inputs, _, lut_bits = cell.get_lut(out_wire)
+            active_inputs = [cell2top.get(i) for i in active_inputs]
+            assert None not in active_inputs, "missing input wire"
+            assert len(active_inputs) <= 6, f"too many inputs ({cell.short_name})"
+            set_gate(active_inputs, out_wire_global, lut_bits)
         
         px, py = 0.3, 0.3
         (x0, y0), (x1, y1) = ref.get_bounding_box()
         wire_rects += [x0+px, y0+py, x1-px, y1-py]
-        wire_infos += [output_wire, 0]
-
-        if 'dfxtp' in cell.name:  # d flip-flop
-            pin2wire = (dict(zip(cell.input_wires.keys(), inputs)))
-            CLK, D, Q = pin2wire['CLK'], pin2wire['D'], output_wire
-            D1 = next_wire
-            next_wire += 1
-            set_gate([D, CLK, D1], D1, LUT_DLATCH_NE)
-            set_gate([D1, CLK, Q], Q, LUT_DLATCH_PE)
-        elif 'dlclkp' in cell.name:  # clock gate
-            pin2wire = (dict(zip(cell.input_wires.keys(), inputs)))
-            CLK, GATE, GCLK = pin2wire['CLK'], pin2wire['GATE'], output_wire
-            E = next_wire
-            next_wire += 1
-            set_gate([GATE, CLK, E], E, LUT_DLATCH_NE)
-            set_gate([E, CLK], GCLK, 0b1000) # and
-        else:
-            assert cell.resolved and len(inputs) <=6
-            set_gate(inputs, output_wire, cell.lut_bits[out_i])
+        wire_infos += [cell2top[outputs.pop()], 0]        
 
     export = defaultdict(list)
     for i in range(next_wire+1):
@@ -534,25 +485,63 @@ def export_circuit(top_cell, out_f):
             export['luts'].append(gate_luts.get(i, 0))
             export['inputs'].extend(gate_inputs.get(i, []))
             export['outputs'].extend(gate_outputs.get(i, []))
+    for k, arr in export.items():
+        arr = (np.uint64 if k=='luts' else np.uint32)(arr)
+        b64 = base64.b64encode(arr.tobytes()).decode('ascii')
+        export[k] = {'len': len(arr), 'data':b64, 'dtype':arr.dtype.name}
+        print(f'{k}: {len(arr)}')
 
     out_f.write('bbox:%s,\n' % top_cell.bbox.ravel().tolist())
     out_f.write('pins:%s,\n' % top_cell.pin2wire)
     out_f.write('wire_rects:[%s],\n' % (','.join('%.3f'%v for v in wire_rects)))
     out_f.write('wire_infos:[%s],\n' % (','.join('%d'%v for v in wire_infos)))
     out_f.write('gates:%s,\n'%str(dict(export)))
+    print(input_n_stats.most_common())
 
+
+# project = '09/tt_um_znah_vga_ca'         # 😎
+# project = '09/tt_um_rejunity_vga_test01' # drop
+# project = '09/tt_um_2048_vga_game'       # shows a grid and 2048
+# project = '08/tt_um_a1k0n_nyancat'       # 08/😎,  09/ doesn't work (only draws one line)
+# project = '08/tt_um_a1k0n_vgadonut'      # 🍩, but TODO 2x clock
+# project = '09/tt_um_vga_clock'           # 00:00:00
+# project = '09/tt_um_cdc_test'            # aircraft  
+# project = '09/tt_um_toivoh_demo'         # TODO 2x clock
+# project = '09/tt_um_warp'                # not sure if vsync is always correct
+# project = '08/tt_um_johshoff_metaballs'  # I see one ball
+project = '08/tt_um_top'                   # 🔥
+
+
+tt_index, project = project.split('/')
+
+def fetch_gds(tt_index, project, cache_dir=Path('gds')):
+    cache_dir.mkdir(exist_ok=True)
+    name = f'{tt_index}_{project}.gds'
+    cache_path = cache_dir / name
+    if cache_path.exists():
+        return cache_path
+    url = f'https://github.com/TinyTapeout/tinytapeout-{tt_index}/raw/refs/heads/main/projects/{project}/{project}.gds'
+    response = requests.get(url, stream=True)
+    response.raise_for_status()
+    total = int(response.headers.get('content-length', 0))
+    loaded = 0
+    tmp_path = cache_path.with_suffix('.tmp')
+    with open(tmp_path, 'wb') as f:
+       for chunk in response.iter_content(chunk_size=1024):
+           loaded += f.write(chunk)
+           print(f"\rfetching {name} ... {loaded//1024} / {total//1024} kB", end='')
+    print()
+    tmp_path.rename(cache_path)
+    return cache_path
 
 pdk_root = '/Users/moralex/ttsetup/pdk/volare/sky130/versions/bdc9412b3e468c102d01b7cf6337be06ec6e9c9a/'
-pdk_gds = pdk_root+'sky130A/libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds'    
-
-#vga_gds = 'GDS_logs/runs/wokwi/final/gds/tt_um_znah_vga_ca.gds'
-vga_gds = 'GDS_logs_drop/runs/wokwi/final/gds/tt_um_rejunity_vga_test01.gds'
+pdk_gds = pdk_root+'sky130A/libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds'
 
 if __name__ == '__main__':
-    gds = gdspy.GdsLibrary().read_gds(vga_gds)
+    gds_fn = fetch_gds(tt_index, project)
+    print(f'processing {gds_fn}...')
+    gds = gdspy.GdsLibrary().read_gds(gds_fn)
     cells = analyse_cells(gds)
-    # cells['sky130_fd_sc_hd__and3_1'].print_table()
-    # cells['sky130_fd_sc_hd__conb_1'].print_table()
     print('Top cell analysis ...')
     top_cell = Cell(gds.top_level()[0], cells)
     print('Export ...')
@@ -560,5 +549,3 @@ if __name__ == '__main__':
         f.write('const CIRCUIT = {\n')
         export_circuit(top_cell, f)
         f.write('};\n')
-
-    #print(f'connected wire n: {len(top_cell.wire2refs)} of {len(top_cell.wire2parts)}')

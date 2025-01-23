@@ -12,13 +12,13 @@
 
 
 enum {
-    MAX_GATE_N = 4096,
+    MAX_GATE_N = 1024*8,
     MAX_IO_N = MAX_GATE_N*4,
     WAVE_STOP = 0xFFFF,
 };
 
 BUFFER(gate_n, uint32_t, 1)
-BUFFER(luts, uint32_t, MAX_GATE_N);
+BUFFER(luts, uint64_t, MAX_GATE_N);
 BUFFER(inputs_start, uint32_t, MAX_GATE_N+1);
 BUFFER(outputs_start, uint32_t, MAX_GATE_N+1);
 BUFFER(inputs, uint32_t, MAX_IO_N);
