@@ -39,7 +39,6 @@ function array2tex(glsl, array, format, tag, w=256) {
     return glsl({}, {size:[w,h], data, format, tag});
 }
 
-
 const PAD = 48;
 const W = 640+PAD*2, H = 480+PAD*2;
 
@@ -52,6 +51,16 @@ class VGASimulator {
     constructor(glsl, wasm) {
         this.glsl = glsl;
         this.main = prepareWASM(wasm.instance);
+
+        this.inc= `
+        const vec2 justify = vec2(0.0, 1.0);
+        vec2 fit(vec2 p, vec4 box) {
+            vec2 V=vec2(ViewSize), B=box.zw-box.xy;
+            float ab = B.x/B.y, av = V.x/V.y;
+            vec2 s = min(vec2(ab/av, av/ab), 1.0);
+            vec2 q = 2.0/B*s;
+            return q*(p-box.xy)-s + justify*(q-s+1.0);
+        }`;
     }
     
     load_circuit(json) {
@@ -81,6 +90,7 @@ class VGASimulator {
             const a = new({'uint32':Uint32Array, 'uint64':BigUint64Array}[d.dtype])(u8.buffer);
             this.main[name].set(a);
         }
+        this.main.state.fill(0);
         while (this.main.update_all());      
     }    
 
@@ -132,21 +142,10 @@ class VGASimulator {
         this.ray = [x, y];
     }
 
-    draw(speed=1) {
-        const {glsl, geom, ray} = this;
+    draw_circuit() {
+        const {glsl, geom, inc} = this;
         const state = glsl({}, {data:this.main?.state||null,
             size:[256, this.main.state.length / 256], format:'r8u', tag:'state'});
-        this.sync_row();
-
-        const inc= `
-        const vec2 justify = vec2(0.0, 1.0);
-        vec2 fit(vec2 p, vec4 box) {
-            vec2 V=vec2(ViewSize), B=box.zw-box.xy;
-            float ab = B.x/B.y, av = V.x/V.y;
-            vec2 s = min(vec2(ab/av, av/ab), 1.0);
-            vec2 q = 2.0/B*s;
-            return q*(p-box.xy)-s + justify*(q-s+1.0);
-        }`;
 
         glsl({cellBox:this.bbox, ...geom, state,
             Grid:geom.rects.size, Blend:'s+d', Inc:inc+`
@@ -155,21 +154,32 @@ class VGASimulator {
             vec4 rect = rects(ID.xy);
             ivec4 info = texelFetch(infos, ID.xy, 0);
             int wire = info.x;
-            float v = float(texelFetch(state, ivec2(wire&0xff, wire>>8), 0).x);
-            varying vec4 color = 0.2+vec4(0.4*v);
-            if (info.y > 0) {
-                color *= vec4(0.8, 0.8, 0.4, 1.0);
+            varying vec4 color = vec4(0.6, 0.6, 0.6, 1.0);
+            if (info.y >= 16) { // wire
+                color = vec4(0.6, 0.6, 0.2, 1.0);
+            } else if (info.y == 1) { // mem
+                color = vec4(0.3, 0.9, 0.3, 1.0);
+            } else if (info.y == 2) { // clock tree
+                color = vec4(0.3, 0.7, 0.9, 1.0);
+            } else if (info.y == 3) { // clock gate
+                color = vec4(0.9, 0.3, 0.3, 1.0);
             }
+            float v = float(texelFetch(state, ivec2(wire&0xff, wire>>8), 0).x);
+            color *= 0.3+v*0.6;
             vec2 p = mix(rect.xy, rect.zw, UV);
             VPos.xy = fit(p, cellBox);`,
         FP:`color`});
+    }
 
-        glsl({WH:[W,H], ray, screen:this.screen, Inc:inc, Blend:'s+d',
+    draw_screen(speed=1, brightness=1) {
+        const {glsl, ray, inc} = this;
+        this.sync_row();
+        glsl({WH:[W,H], ray, screen:this.screen, brightness, Inc:inc, Blend:'s+d',
             VP:`fit(vec2(UV.x, 1.0-UV.y)*WH, vec4(0,0,WH)),0,1`, FP:`
             vec4 c = screen(UV);
             float d = UV.y-(ray.y/WH.y);
-            c *= d>0.0 ? clamp(d*10.0, 0.0, 1.0) : 1.0;
-            FOut = c*0.8`});
+            c *= d>0.0 ? clamp(d*10.0, 0.0, 1.0)*0.5+0.5 : 1.0;
+            FOut = c*brightness`});
 
         glsl({ray, WH:[W,H], Inc:inc, r:Math.sqrt(speed), Blend:'s+d',
             VP:`fit(vec2(ray.x, WH.y-ray.y-1.0)+4.*XY*vec2(r,1), vec4(0,0,WH)), 0, 1`,

@@ -237,17 +237,13 @@ def classify_wires(fets, wires2fets):
             'out':out_wires, 'gate':wires['G']}
 
 
-def build_signals(wire2fets, inputs, to_resolve):
+def build_signals(wire2fets: dict[int, set[FET]],
+                  inputs: set[int], to_resolve: set[int]):
     '''
-    wire2fets: {wire: [fet,...],
-    inputs: {wire,...}
-    to_resolve: {wire,...}
-    
     return: 
         resolved: bool
         signals: [wire_n,2,case_n]
     '''
-
     input_n = len(inputs)
     wire_n = max(wire2fets.keys())+1 if wire2fets else 2
     case_n = 1<<input_n
@@ -390,7 +386,7 @@ def analyse_cells(gds):
         short = cell_name.split('__')[-1]
         print(f'\r{short.ljust(30)}', end='')
         if len(gds_cell.references) > 0:
-            print('- skipping')
+            print('- skipping non-leaf cell')
             continue
         cells[cell_name] = cell = Cell(gds_cell, cells)
         if not cell.resolved:
@@ -432,7 +428,7 @@ def export_wires(top_cell):
                 continue
             (x0, y0), (x1, y1) = q.min(0), q.max(0)
             wire_rects += [x0, y0, x1, y1]
-            wire_infos += [wire, z]
+            wire_infos += [wire, z+16]
     return wire_rects, wire_infos
 
 def export_circuit(top_cell, out_fn):
@@ -457,7 +453,7 @@ def export_circuit(top_cell, out_fn):
         cell = top_cell.cell_library[ref.ref_cell.name]
         cell2top = top_cell.connect_child(ref)
         outputs = set(cell2top) & cell.wire_by_type['out']
-        if not outputs:
+        if len(outputs) == 0:
             continue
         
         hidden_state = cell.wire_by_type['state'] - set(cell2top)
@@ -475,7 +471,15 @@ def export_circuit(top_cell, out_fn):
         px, py = 0.3, 0.3
         (x0, y0), (x1, y1) = ref.get_bounding_box()
         wire_rects += [x0+px, y0+py, x1-px, y1-py]
-        wire_infos += [cell2top[outputs.pop()], 0]        
+        cell_type = 0
+        has_clk = 'clk' in cell.short_name
+        if hidden_state and has_clk:
+            cell_type = 3  # clock gate
+        elif has_clk:
+            cell_type = 2  # clock buf
+        elif hidden_state:
+            cell_type = 1  # memory
+        wire_infos += [cell2top[outputs.pop()], cell_type]        
 
     export = defaultdict(list)
     for i in range(next_wire+1):
@@ -499,25 +503,11 @@ def export_circuit(top_cell, out_fn):
         f.write('"wire_infos":[%s],\n' % (','.join('%d'%v for v in wire_infos)))
         f.write('"gates":%s\n'%json.dumps(export))
         f.write('}')
-    print(input_n_stats.most_common())
+    print('chip bbox:', top_cell.bbox.ravel().tolist())
+    print(input_n_stats)
 
-
-project = '09/tt_um_znah_vga_ca'         # 😎
-# project = '09/tt_um_rejunity_vga_test01' # drop
-# project = '09/tt_um_2048_vga_game'       # shows a grid and 2048
-# project = '08/tt_um_a1k0n_nyancat'       # 08/😎,  09/ doesn't work (only draws one line)
-# project = '08/tt_um_a1k0n_vgadonut'      # 🍩, but TODO 2x clock
-# project = '09/tt_um_vga_clock'           # 00:00:00
-# project = '09/tt_um_cdc_test'            # aircraft  
-# project = '09/tt_um_toivoh_demo'         # TODO 2x clock
-# project = '09/tt_um_warp'                # not sure if vsync is always correct
-# project = '08/tt_um_johshoff_metaballs'  # I see one ball
-# project = '08/tt_um_top'                   # 🔥
-
-
-tt_index, project = project.split('/')
-
-def fetch_gds(tt_index, project, cache_dir=Path('gds')):
+def fetch_gds(project, cache_dir=Path('gds')):
+    tt_index, project = project.split('_', 1)
     cache_dir.mkdir(exist_ok=True)
     name = f'{tt_index}_{project}.gds'
     cache_path = cache_dir / name
@@ -540,12 +530,29 @@ def fetch_gds(tt_index, project, cache_dir=Path('gds')):
 pdk_root = '/Users/moralex/ttsetup/pdk/volare/sky130/versions/bdc9412b3e468c102d01b7cf6337be06ec6e9c9a/'
 pdk_gds = pdk_root+'sky130A/libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds'
 
+projects = [
+    '09_tt_um_znah_vga_ca',         # 😎
+    '09_tt_um_rejunity_vga_test01', # drop
+    '08_tt_um_top',                 # 🔥
+    '09_tt_um_2048_vga_game',       # shows a grid and 2048
+    '08_tt_um_a1k0n_nyancat',       # 08/😎,  09/ doesn't work (only draws one line)
+    '09_tt_um_vga_clock',           # 00:00:00
+    
+    #'09_tt_um_cdc_test',            # airplane
+    #'08_tt_um_johshoff_metaballs',  # I see one ball
+    #'09_tt_um_warp',                # not sure if vsync is always correct
+    #'08_tt_um_a1k0n_vgadonut',      # 🍩, but TODO 2x clock
+    #'09_tt_um_toivoh_demo',         # TODO 2x clock
+]
+
+
 if __name__ == '__main__':
-    gds_fn = fetch_gds(tt_index, project)
-    print(f'processing {gds_fn}...')
-    gds = gdspy.GdsLibrary().read_gds(gds_fn)
-    cells = analyse_cells(gds)
-    print('Top cell analysis ...')
-    top_cell = Cell(gds.top_level()[0], cells)
-    print('Export ...')
-    export_circuit(top_cell, 'circuit.json')
+    for project in projects:
+        gds_fn = fetch_gds(project)
+        print(f'processing {gds_fn}...')
+        gds = gdspy.GdsLibrary().read_gds(gds_fn)
+        cells = analyse_cells(gds)
+        print('Top cell analysis ...')
+        top_cell = Cell(gds.top_level()[0], cells)
+        print('Export ...')
+        export_circuit(top_cell, gds_fn.with_suffix('.json'))

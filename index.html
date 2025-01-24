@@ -26,6 +26,26 @@
             Speed: <div id="speed_display"></div>
             <input id="speed" type="range" min="-5" max="12" value="0">
         </div>
+        <div>
+            Show: 
+            <select id="show_select">
+                <option value="circuit+screen">circuit+screen</option>
+                <option value="screen">screen</option>
+                <option value="circuit">circuit</option>
+            </select>
+        </div>
+        <div>
+            Circuit: 
+            <select id="circuit_select" style="width: 150px;">
+                <option value="09_tt_um_znah_vga_ca">VGA CA (znah)</option>
+                <option value="08_tt_um_a1k0n_nyancat">Nyan Cat (a1k0n)</option>
+                <option value="09_tt_um_rejunity_vga_test01">Drop (ReJ et al.)</option>
+                <option value="08_tt_um_top">Flame (K. Beckmann & L. Mårtensson)</option>
+                <option value="09_tt_um_vga_clock">VGA Clock (Matt Venn)</option>
+                <option value="09_tt_um_2048_vga_game">2048 Game (Uri Shaked)</option>
+            </select>
+            <span id="circuit_info"></span>
+        </div>        
     </div>
 </div>
 <main>
@@ -62,20 +82,35 @@
     const canvas = $('#c');
     const glsl = SwissGL(canvas);
 
+    const ca_project = '09_tt_um_znah_vga_ca';
     let sim;
     let skip_n = 0;
     let needBreak = false;
+    let project;
     async function init() {
         sim = await VGASimulator.init(glsl);
-        const response = await fetch('circuit.json');
-        const data = await response.json();        
-        sim.load_circuit(data);
+        await load_circuit();
         glsl.loop(frame);
     }
 
-    
-    $('#phase').innerText = 'row 0: init';
+    async function load_circuit() {
+        project = $('#circuit_select').value;
+        $('#circuit_info').innerText = 'loading...';
+        $('#phase').innerText = project==ca_project ? 'row 0: init' : '';
+        $('#breakpoints_div').style.display = project==ca_project ? 'block' : 'none';
+        const url = `gds/${project}.json`; 
+        const response = await fetch(url);
+        const data = await response.json();
+        sim.load_circuit(data);
+        const [tt, ...rest] = project.split('_');
+        const name = rest.join('_');
+        $('#circuit_info').innerHTML = `<a href="https://tinytapeout.com/runs/tt${tt}/${name}">project info</a>`;
+    }
+    $('#circuit_select').onchange = load_circuit;
+
     function updateStatus(line) {
+        if (project != ca_project)
+            return;
         let status = 'copy the previous row';
         if (line < 0 || line >= H) {
             status = 'offscreen (skip)';
@@ -116,7 +151,16 @@
             }   
         }
         needBreak = false;
-        sim.draw(step_n);
+
+        const show = $('#show_select').value;
+        if (show =='circuit') {
+            sim.draw_circuit();
+        } else if (show == 'screen') {
+            sim.draw_screen(step_n);
+        } else if (show == 'circuit+screen') {
+            sim.draw_circuit();
+            sim.draw_screen(step_n, 0.6);
+        }
     }
 
     init();
