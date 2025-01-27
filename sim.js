@@ -1,5 +1,10 @@
 function prepareWASM(instance) {
-    const type2class = {uint8_t: Uint8Array, int: Int32Array, uint32_t: Uint32Array, uint64_t: BigUint64Array};
+    const type2class = {
+        uint8_t: Uint8Array,
+        float: Float32Array,
+        int: Int32Array, 
+        uint32_t: Uint32Array,
+        uint64_t: BigUint64Array};
     const prefix = '_len_';
     const exports = instance.exports;
     const outputs = {};
@@ -91,7 +96,10 @@ class VGASimulator {
             this.main[name].set(a);
         }
         this.main.state.fill(0);
-        while (this.main.update_all());      
+        while (this.main.update_all());
+        // console.time('bench');
+        // for (let i=0; i<100_000; ++i) while(!this.step());
+        // console.timeEnd('bench');
     }    
 
     sync_row() {
@@ -102,23 +110,21 @@ class VGASimulator {
             FP:`row(UV)`}, this.screen);
     }
 
-    step(rowCallback) {
+    step(rowCallback=()=>{}) {
         const {main, tick, pins, screen_row} = this;
         const clk = tick&1;
         const rst_n = (tick>9) & 1; // ???
-        const [R1, G1, B1, vsync, R0, G0, B0, hsync] = this.out_wires.reverse();
-        //const [hsync, B0, G0, R0, vsync, B1, G1, R1] = out_wires;
+        const [R1, G1, B1, vsync, R0, G0, B0, hsync] = this.out_wires;
         const S = main.state;
         const prev_hsync = S[hsync];
         const prev_vsync = S[vsync];
         main.set_signal(pins.clk, clk);
         main.set_signal(pins.rst_n, rst_n);
-        while(main.run_wave());
-        //main.run_wave()
-        this.tick += 1;
+        const cycleDone = main.run_wave()==0;
+        this.tick += cycleDone;
 
         let [x, y] = this.ray;
-        if (clk == 1) {
+        if (cycleDone && clk == 1) {
             if (x<W) {
                 const p = x*4;
                 screen_row[p+0] = S[R1]*170 + S[R0]*85;
@@ -127,7 +133,6 @@ class VGASimulator {
             }
             x += 1;
         }
-        let noBreak = true;
         if (prev_hsync && S[hsync]==0) {
             x = 0;
             this.sync_row();
@@ -140,14 +145,17 @@ class VGASimulator {
             y = 0;
         }
         this.ray = [x, y];
+        return cycleDone;
     }
 
-    draw_circuit() {
+    draw_circuit(speed) {
         const {glsl, geom, inc} = this;
-        const state = glsl({}, {data:this.main?.state||null,
-            size:[256, this.main.state.length / 256], format:'r8u', tag:'state'});
-
-        glsl({cellBox:this.bbox, ...geom, state,
+        const size = [256, Math.ceil(this.main.gate_n[0]/256)];
+        const state = glsl({}, {data:this.main.state, size, format:'r8u', tag:'state'});
+        const heat = glsl({}, {data:this.main.heat, size, format:'r32f', tag:'heat'});
+        this.main.cooldown(0.75**speed);
+    
+        glsl({cellBox:this.bbox, ...geom, state, heat,
             Grid:geom.rects.size, Blend:'s+d', Inc:inc+`
             uniform isampler2D infos;
             uniform usampler2D state;`, VP:`
@@ -164,8 +172,11 @@ class VGASimulator {
             } else if (info.y == 3) { // clock gate
                 color = vec4(0.9, 0.3, 0.3, 1.0);
             }
-            float v = float(texelFetch(state, ivec2(wire&0xff, wire>>8), 0).x);
+            ivec2 wireI = ivec2(wire&0xff, wire>>8);
+            float v = float(texelFetch(state, wireI, 0).x);
+            float h = texelFetch(heat, wireI, 0).x;
             color *= 0.3+v*0.6;
+            color.r += h;
             vec2 p = mix(rect.xy, rect.zw, UV);
             VPos.xy = fit(p, cellBox);`,
         FP:`color`});
@@ -181,8 +192,8 @@ class VGASimulator {
             c *= d>0.0 ? clamp(d*10.0, 0.0, 1.0)*0.5+0.5 : 1.0;
             FOut = c*brightness`});
 
-        glsl({ray, WH:[W,H], Inc:inc, r:Math.sqrt(speed), Blend:'s+d',
-            VP:`fit(vec2(ray.x, WH.y-ray.y-1.0)+4.*XY*vec2(r,1), vec4(0,0,WH)), 0, 1`,
+        glsl({ray, WH:[W,H], Inc:inc, r:Math.sqrt(speed)*0.5, Blend:'s+d',
+            VP:`fit(vec2(ray.x, WH.y-ray.y-1.0)+4.0*XY*vec2(r,1), vec4(0,0,WH)), 0, 1`,
             FP:`exp(-dot(XY,XY)*2.0)*vec4(0.9,0.9,0.3,1.0)`}); 
     }
 }

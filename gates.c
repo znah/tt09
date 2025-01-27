@@ -25,7 +25,7 @@ BUFFER(inputs, uint32_t, MAX_IO_N);
 BUFFER(outputs, uint32_t, MAX_IO_N);
 
 BUFFER(state, uint8_t, MAX_GATE_N);
-BUFFER(update_count, uint32_t, MAX_GATE_N);
+BUFFER(heat, float, MAX_GATE_N);
 
 BUFFER(queue, uint32_t, MAX_GATE_N);
 BUFFER(queue_end, uint32_t, 2)
@@ -74,7 +74,7 @@ int set_signal(int gate_i, uint8_t value) {
         return queue_len();
     }
     state[gate_i] = value;
-    update_count[gate_i]++;
+    heat[gate_i] += 1.0f;
     int i0 = outputs_start[gate_i];
     int i1 = outputs_start[gate_i+1];
     for (int i=i0; i<i1; ++i) {
@@ -107,4 +107,11 @@ int run_wave() {
     }
     queue_pop(); // remove WAVE_STOP
     return step_count;
+}
+
+WASM_EXPORT("cooldown")
+int cooldown(float rate) {
+    for(int i=0; i<gate_n[0]; ++i) {
+        heat[i] *= rate;
+    }
 }

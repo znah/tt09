@@ -24,7 +24,7 @@
         </div>
         <div>
             Speed: <div id="speed_display"></div>
-            <input id="speed" type="range" min="-5" max="12" value="0">
+            <input id="speed" type="range" min="-5" max="16" value="0">
         </div>
         <div>
             Show: 
@@ -135,14 +135,14 @@
     function frame() {
         glsl.adjustCanvas();
 
-        const step_n = Math.pow(2, $('#speed').value);
+        const speed = $('#speed').value;
+        const step_n = Math.pow(2, speed);
+        $('#speed_display').textContent = '2^'+speed;
         if (step_n >= 1) {
-            $('#speed_display').textContent = step_n+'x';
             for (let i=0; i<step_n && !needBreak; ++i) {
                 sim.step(updateStatus);
             }
         } else {
-            $('#speed_display').textContent = `1/${1/step_n}x`;
             if (skip_n <= 0) {
                 sim.step(updateStatus);
                 skip_n = 1/step_n-1;
@@ -154,11 +154,11 @@
 
         const show = $('#show_select').value;
         if (show =='circuit') {
-            sim.draw_circuit();
+            sim.draw_circuit(step_n);
         } else if (show == 'screen') {
             sim.draw_screen(step_n);
         } else if (show == 'circuit+screen') {
-            sim.draw_circuit();
+            sim.draw_circuit(step_n);
             sim.draw_screen(step_n, 0.6);
         }
     }
