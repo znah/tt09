@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<title>Tiny SwissGL example</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+    body, html {margin: 0; padding: 0; 
+        background-color: black; 
+        overflow: hidden;
+    }
+    #c {width:100vw; height: 100vh}
+    #sliderContainer {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100vw;
+        height: 40px; /* Slider container height */
+        background-color: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center; /* Center slider vertically */
+    }
+    #slider {
+        width: calc(100% - 20px); /* Slider width with some margin */
+        margin: 0 10px; /* Add margin to left and right */
+    }    
+    #demo {
+        position: relative;
+    }
+    .overlay{
+        pointer-events: none;
+
+    }
+    #overlay {
+        position: absolute;
+        left: 10%;
+        bottom: 5%;
+        color: #10ee10;
+        font-family: monospace;
+        text-shadow: 0 0 4px #00A000, 0 0 8px #00A000;
+        font-size: 200%;
+    }
+
+    pre, code, pre[class*="language-"], code[class*="language-"] {
+        margin: 0;
+        background: transparent !important;
+        color: #fff;
+        text-shadow: 0 0 5px #ffd700;
+    }
+
+    /* Override Prism.js styles for Star Wars theme */
+    pre[class*="language-"] {
+        background: transparent;
+        text-shadow: 0 0 5px #ffd700;
+        margin: 0;
+    }
+/* Star Wars theme overrides for Prism */
+.token.comment { color: #32cd32 !important; }
+.token.keyword { color: #ffd700 !important; }
+.token.function { color: #87ceeb !important; }
+.token.number { color: #ff4500 !important; }
+.token.string { color: #ff69b4 !important; }
+.token.operator { color: #fff !important; }
+.token.punctuation { color: #daa520 !important; }    
+
+</style>
+<div id="demo">
+    <canvas id="c"></canvas>
+    <div class="overlay" id="overlay"></div>
+</div>
+
+
+<div id="sliderContainer">
+    <input type="range" min="0" max="100" value="50" step="0.01" id="slider">
+</div>
+
+<link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css" rel="stylesheet" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-verilog.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/animejs@3.2.2/lib/anime.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lil-gui@0.20"></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@15.0.4/build/Tone.min.js"></script>
+
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+
+<script src="swissgl.js"></script>
+<script src="sim.js"></script>
+
+<script>
+    "use strict";
+    const $ = q=>document.querySelector(q);
+    const canvas = $('#c');
+    const glsl = SwissGL(canvas);
+
+    const gui = new lil.GUI();
+
+    const ca_project = '09_tt_um_znah_vga_ca';
+    let sim;
+    let project;
+    let codeTex;
+
+    const subtitles = [];
+    const animState = { 
+        subProgress:0.0,
+        codeScroll:-1.0,
+        simSpeed:0.0,
+    }
+
+    async function init() {
+        const code = await (await fetch('project.v')).text();
+        const codeEl = document.createElement('pre');
+        codeEl.innerHTML = `<code class="language-verilog">${code.replaceAll('<', '&lt;')}</code>`;
+        Prism.highlightAllUnder(codeEl);
+        document.body.appendChild(codeEl)
+        const codeCanvas = await html2canvas(codeEl, {backgroundColor:null});
+        codeTex = glsl({}, {data:codeCanvas, filter:'miplinear', wrap:'edge', tag:'verilog'});
+        codeEl.remove();
+
+        sim = await VGASimulator.init(glsl);
+        const url = `gds/${ca_project}.bin`;
+        const response = await fetch(url);
+        const data = await response.arrayBuffer();
+        sim.load_circuit_bin(data);
+        glsl.loop(frame);
+
+        gui.add(sim.view, 'perspective', 0.0, 3.0);
+        gui.add(sim.view, 'wiresAlpha', 0.0, 1.0);
+        gui.add(sim.view, 'reveal', 0.0, 16.0);
+        gui.add(sim.view, 'wireHeight', 0.0, 3.0);
+        gui.add(animState, 'simSpeed', 0.0, 16.0);
+
+        story();
+    }
+
+    canvas.addEventListener('wheel', e=>{
+        e.preventDefault();
+        const {view} = sim;
+        const dx=e.deltaX*0.001, dy=e.deltaY*0.001;
+        if (e.ctrlKey) {
+            view.log2zoom -= dy*10.0;
+            view.log2zoom = Math.max(0.0, view.log2zoom);
+        } else if (e.shiftKey) {
+            view.pan += dx;
+            view.tilt += dy;
+        } else {
+            const speed = Math.pow(2.0, -view.log2zoom)/view.baseScale;
+            const s = Math.sin(view.pan), c = Math.cos(view.pan);
+            view.centerX += (c*dx + s*dy)*speed;
+            view.centerY += (s*dx - c*dy)*speed;
+        }
+    }, {passive: false});
+
+    const music = new Tone.Player({url:"between_the_spaces.mp3", volume: -20}).toDestination();
+    const clickSynth = new Tone.MetalSynth({
+        frequency: 200,
+        envelope: {
+            attack: 0.001,
+            decay: 0.02,
+            release: 0.01
+        },
+        harmonicity: 5.1,
+        modulationIndex: 32,
+        resonance: 4000,
+        octaves: 1.5,
+        volume: -20
+    }).toDestination();
+
+
+    function play() {
+        tl.play();
+        Tone.Transport.start()
+        music.start(null, tl.currentTime/1000);
+        if (animState._simSpeed) {
+            animState.simSpeed = animState._simSpeed;
+            delete animState._simSpeed;
+        }
+    }
+    function pause() {
+        tl.pause();
+        Tone.Transport.stop()
+        music.stop();
+        animState._simSpeed = animState.simSpeed;
+        animState.simSpeed = 0.0;
+    }
+    function seek(time) {
+        tl.seek(time);
+        Tone.Transport.position = time/1000.0;
+        music.seek(time/1000.0);
+    }
+
+    document.addEventListener('keydown', async (event) => {
+        if (Tone.context.state == 'suspended') {
+            await Tone.start();
+        }
+        const t = tl.currentTime;
+        if (event.key == ' ') {
+            event.preventDefault();
+            tl.paused ? play() : pause();
+        } else if (event.key == 'ArrowLeft') {
+            pause();
+            seek(t-500);
+        } else if (event.key == 'ArrowRight') {
+            pause();
+            seek(t+500);
+            play();
+        }
+    });
+
+    
+    const tl = anime.timeline({easing:'easeInOutSine', autoplay: false, 
+        update:a=>$('#slider').value = a.progress});
+    slider.addEventListener('input', () => {
+        const value = slider.value
+        pause();
+        seek(tl.duration * value/100.0);
+    });
+
+    function typeLine(s, t0, duration=1600) {
+        subtitles.push(s);
+        const maxCharN = 80;
+        t0 = t0 || tl.duration;
+        tl.add({targets: animState, subProgress:subtitles.length-0.1,
+            easing: 'linear', duration}, t0);
+        const sequence = new Tone.Sequence((time, note) => {
+            if (note == '\0') return;
+            clickSynth.triggerAttackRelease(note.charCodeAt(0)*20.0, '16n', time);
+        }, s.split(''), duration/maxCharN/1000.0).start(t0/1000.0);     
+        sequence.loop = 0;   
+        return t0;
+    }
+    
+    const D0 = 5000;
+    function story() {
+        typeLine("I'm exploring the foundations of the information age");
+        typeLine("The silent engine behind computing and AI", 4000.0);
+        tl.add({targets: sim.view, reveal:[0.0,1.0], duration:10000.0, easing:'linear'}, 0.0);
+        tl.add({targets: sim.view, centerX:130, centerY:84, log2zoom:2.1, tilt:1.0, pan:-0.5,
+            duration:12000.0}, 0.0);
+
+        typeLine("Where human thoughts expressed in code", 8000.0);
+        tl.add({targets: animState, codeScroll:[-1.0,1.0], duration:6000, easing:'linear'}, 8000.0);
+
+        typeLine("Become nanoscale physical structures", 12000.0);
+        tl.add({targets: sim.view, reveal:[10.0], duration:8000, easing:'linear'}, 10000.0);
+        
+        typeLine("And that's where I found life");
+        tl.add({targets: animState, simSpeed:1/4.0, duration:1000, easing:'linear'}), '-=500';
+        tl.add({targets: sim.view, centerX:130, centerY:90, log2zoom:1.0, tilt:1.0, pan:-0.3,
+            duration:6000.0});
+        
+        typeLine("in transient states, \0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0between");
+        typeLine("The \0\0\0\0\0\0\0\0Digital \0\0\0\0\0\0\0\0Heartbeats");
+
+        console.log("Duration:", tl.duration/1000);
+        tl.seek(25000);
+
+    }
+
+    function rowCallback(line) {
+        return false;
+    }
+
+    function frame({time}) {
+        glsl.adjustCanvas();
+
+        const {min, floor} = Math;
+
+        const t = animState.subProgress;
+        const ti = floor(t), tf = t-ti;
+        const overlay = $('#overlay');
+        overlay.style.opacity = min(1.0, (1.0-tf)/0.1);
+        const line = subtitles[ti];
+        const charPos = Math.min(floor(tf*80), line.length);
+        overlay.innerText = line.slice(0, charPos);
+
+        const step_n = animState.simSpeed;
+        sim.multistep(step_n, rowCallback);
+        sim.draw_circuit(step_n);
+
+        glsl({T:codeTex, ...animState, time, 
+        Blend:'d*(1-sa)+s*sa', VP:`
+        float y = UV.y*2.5;
+        VPos = vec4(XY.x*1.6, y*1.5-1.0, 0.0, 1.0+y*0.75);`, FP:`
+        float alpha = 1.0-pow(XY.y, 6.0);
+        float y = 1.0-UV.y+codeScroll;
+        FOut = 1.25*alpha*vec4(T(vec2(UV.x-0.2,y)))`});
+    }
+
+    init();
+
+</script>

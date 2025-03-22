@@ -38,6 +38,10 @@
             Circuit: 
             <select id="circuit_select" style="width: 150px;">
                 <option value="09_tt_um_znah_vga_ca">VGA CA (znah)</option>
+                <option value="05_tt_um_dinogame">05_tt_um_dinogame</option>
+                <option value="08_tt_um_a1k0n_vgadonut">08_tt_um_a1k0n_vgadonut</option>
+                <option value="07_tt_um_algofoogle_raybox_zero">07_tt_um_algofoogle_raybox_zero</option>
+                <!-- <option value="07_tt_um_pongsagon_tiniest_gpu">07_tt_um_pongsagon_tiniest_gpu</option> -->
                 <option value="08_tt_um_a1k0n_nyancat">Nyan Cat (a1k0n)</option>
                 <option value="09_tt_um_rejunity_vga_test01">Drop (ReJ et al.)</option>
                 <option value="08_tt_um_top">Flame (K. Beckmann & L. Mårtensson)</option>
@@ -75,8 +79,8 @@
         <li><a href="https://news.ycombinator.com/item?id=42631629">Hacker News discussion</a></li>
         <li><a href="https://www.linkedin.com/feed/update/urn:li:activity:7282444199445061632/">Linkedin post</a></li>
     </ul>
-
-    <iframe id="video" width="560" height="315" src="https://www.youtube-nocookie.com/embed/XtRncOmQN7c?si=HIwZzaOeo9nyTHsK" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+<!-- 
+    <iframe id="video" width="560" height="315" src="https://www.youtube-nocookie.com/embed/XtRncOmQN7c?si=HIwZzaOeo9nyTHsK" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe> -->
 
 
 </main>
@@ -92,8 +96,6 @@
 
     const ca_project = '09_tt_um_znah_vga_ca';
     let sim;
-    let skip_n = 0;
-    let needBreak = false;
     let project;
     async function init() {
         sim = await VGASimulator.init(glsl);
@@ -106,10 +108,10 @@
         $('#circuit_info').innerText = 'loading...';
         $('#phase').innerText = project==ca_project ? 'row 0: init' : '';
         $('#breakpoints_div').style.display = project==ca_project ? 'block' : 'none';
-        const url = `gds/${project}.json`; 
+        const url = `gds/${project}.bin`;
         const response = await fetch(url);
-        const data = await response.json();
-        sim.load_circuit(data);
+        const data = await response.arrayBuffer();
+        sim.load_circuit_bin(data);
         const [tt, ...rest] = project.split('_');
         const name = rest.join('_');
         $('#circuit_info').innerHTML = `<a href="https://tinytapeout.com/runs/tt${tt}/${name}">project info</a>`;
@@ -120,7 +122,7 @@
         if (project != ca_project)
             return;
         let status = 'copy the previous row';
-        if (line < 0 || line >= H) {
+        if (line < 0 || line >= VGA_SCREEN_H) {
             status = 'offscreen (skip)';
         } else if (line == 0) {
             status = 'recall the starting row';
@@ -136,29 +138,39 @@
             $('#breakpoints_div').classList.remove('flash-once');
             void $('#breakpoints_div').offsetWidth;
             $('#breakpoints_div').classList.add('flash-once');            
-            needBreak = true;
+            return true;
         }
+
     }
+
+    canvas.addEventListener('wheel', e=>{
+        e.preventDefault();
+        const {view} = sim;
+        const dx=e.deltaX*0.001, dy=e.deltaY*0.001;
+        if (e.ctrlKey) {
+            view.log2zoom -= dy*10.0;
+            view.log2zoom = Math.max(0.0, view.log2zoom);
+        } else if (e.shiftKey) {
+            view.pan += dx;
+            view.tilt += dy;
+        } else {
+            const speed = Math.pow(2.0, -view.log2zoom)/view.baseScale;
+            const s = Math.sin(view.pan), c = Math.cos(view.pan);
+            view.centerX += (c*dx + s*dy)*speed;
+            view.centerY += (s*dx - c*dy)*speed;
+        }
+    }, {passive: false});
+
 
     function frame() {
         glsl.adjustCanvas();
 
         const speed = $('#speed').value;
-        const step_n = Math.pow(2, speed);
         $('#speed_display').textContent = '2^'+speed;
-        if (step_n >= 1) {
-            for (let i=0; i<step_n && !needBreak; ++i) {
-                sim.step(updateStatus);
-            }
-        } else {
-            if (skip_n <= 0) {
-                sim.step(updateStatus);
-                skip_n = 1/step_n-1;
-            } else {
-                skip_n--;
-            }   
-        }
-        needBreak = false;
+        const step_n = Math.pow(2, speed);
+        sim.multistep(step_n, updateStatus);
+
+        //sim.view.pan += 0.001;
 
         const show = $('#show_select').value;
         if (show =='circuit') {

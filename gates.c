@@ -12,7 +12,7 @@
 
 
 enum {
-    MAX_GATE_N = 1024*8,
+    MAX_GATE_N = 64*1024,
     MAX_IO_N = MAX_GATE_N*4,
     WAVE_STOP = 0xFFFF,
 };
