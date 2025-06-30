@@ -1,2 +1,2 @@
-gds/*.gds
+*.gds
 *.pyc

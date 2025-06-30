@@ -18,11 +18,16 @@ h1 {
     font-size: 30px;
 }
 #demo {
-    width:100vw; height: 90vh;
-    max-height: 80vw;
+    width:100vw;
+    height: 80vh;
     position: relative;
 }
-#c {width:100%; height: 100%}
+#c {
+    width:100%; 
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+}
 #controls {
     position: absolute;
     margin: 0 20px;
@@ -78,4 +83,24 @@ li {
 #video {
     margin: 10px;
     max-width: 90vw;
+}
+#view_controls {
+    position: absolute;
+    right: 10px;
+    bottom: 0px;
+    display: flex;
+    flex-direction: column;
+}
+#view_controls button {
+    width: 40px;
+    height: 40px;
+    margin-bottom: 6px;
+    background-color: rgba(0,0,0,0.5);
+    color: #8d7;
+    border: 1px solid #8d7;
+    cursor: pointer;
+    padding: 8px;
+}
+#view_controls button:hover {
+    background-color: rgba(50,50,50,0.5);
 }

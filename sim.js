@@ -73,7 +73,7 @@ class VGASimulator {
         this.screen = glsl({}, {size:[MAX_W, VGA_SCREEN_H], tag:'screen'});
         this.min_steps_per_tick = 16;
 
-        glsl.gl.canvas.addEventListener('wheel', this.scrollHandler.bind(this), {passive: false});
+        this.setupControls(glsl.gl.canvas);
     }
 
     load_circuit_bin(buf) {
@@ -103,6 +103,7 @@ class VGASimulator {
             wiresAlpha: 0.85,
             reveal:16.0,
             wireHeight:1.25,
+            rotateMode: false,
         };
         this.geom  = {
             rects: array2tex(glsl, data.wire_rects.a, 'rgba16u', 'rects'),
@@ -395,14 +396,9 @@ class VGASimulator {
             `});
     }
 
-    scrollHandler(e) {
-        e.preventDefault();
+    _handleMove(dx, dy, isRotate) {
         const {view} = this;
-        const dx=e.deltaX*0.001, dy=e.deltaY*0.001;
-        if (e.ctrlKey) {
-            view.log2zoom -= dy*10.0;
-            view.log2zoom = Math.max(0.0, view.log2zoom);
-        } else if (e.shiftKey) {
+        if (isRotate) {
             view.pan += dx;
             view.tilt += dy;
         } else {
@@ -411,6 +407,41 @@ class VGASimulator {
             view.centerX += (c*dx + s*dy)*speed;
             view.centerY += (s*dx - c*dy)*speed;
         }
+    }
+
+    setupControls(canvas) {
+        const scrollHandler = (e)=>{
+            e.preventDefault();
+            const {view} = this;
+            const dx=e.deltaX*0.001, dy=e.deltaY*0.001;
+            if (e.ctrlKey) {
+                view.log2zoom -= dy*10.0;
+                view.log2zoom = Math.max(0.0, view.log2zoom);
+            } else {
+                this._handleMove(dx, dy, e.shiftKey);
+            }
+        };
+        canvas.addEventListener('wheel', scrollHandler, {passive: false});
+
+        const dragHandler = (e) => {
+            if (e.buttons !== 1) return;
+            e.preventDefault();
+            let dx = -e.movementX * 0.001, dy = -e.movementY * 0.001;
+            const isRotate = e.shiftKey || this.view.rotateMode;
+            if (isRotate) { dx *= 2; dy *= 2; }
+            this._handleMove(dx, dy, isRotate);
+        };
+        canvas.addEventListener('pointerdown', e => {
+            if (!e.isPrimary || e.button !== 0) return;
+            canvas.setPointerCapture(e.pointerId);
+            canvas.addEventListener('pointermove', dragHandler);
+            canvas.style.cursor = 'grabbing';
+        });
+        ['pointerup', 'pointercancel'].forEach(name=>canvas.addEventListener(name, e => {
+            if (!e.isPrimary) return;
+            canvas.removeEventListener('pointermove', dragHandler);
+            canvas.style.cursor = 'grab';
+        }));        
     }
 
 }
