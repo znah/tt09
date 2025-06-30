@@ -194,10 +194,10 @@
         if (show =='circuit') {
             sim.draw_circuit(step_n);
         } else if (show == 'screen') {
-            sim.draw_screen(step_n);
+            sim.draw_screen(step_n, true);
         } else if (show == 'circuit+screen') {
             sim.draw_circuit(step_n);
-            sim.draw_screen(step_n, 0.6);
+            sim.draw_screen(step_n, false);
         }
     }
 

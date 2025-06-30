@@ -1,2 +1,3 @@
 *.gds
 *.pyc
+.DS_Store

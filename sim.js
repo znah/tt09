@@ -358,7 +358,7 @@ class VGASimulator {
             FOut = color*a;`});
     }
 
-    draw_screen(speed=1, brightness=1) {
+    draw_screen(speed=1, fullsreen=false) {
         const {glsl, rayXY, screen} = this;
 
         // const inc= `
@@ -375,11 +375,21 @@ class VGASimulator {
         const max_w = screen.size[0];
         const line_width = this.screen_width;
         const WH = [this.screen_width, VGA_SCREEN_H];
-        glsl({vgaAspect:VGA_ASPECT, WH, max_w, rayXY, screen, brightness, rayTail:Math.sqrt(speed), 
+        glsl({vgaAspect:VGA_ASPECT, WH, max_w, rayXY, screen, fullsreen, rayTail:Math.sqrt(speed), 
             Blend:'d*(1-sa)+s', VP:`
             float viewAspect = float(ViewSize.x) / float(ViewSize.y);
-            vec2 p = vec2(UV.x*vgaAspect/viewAspect, UV.y)*0.8;
-            VPos.xy = vec2(-0.95+p.x,0.95-p.y)`, FP:`
+            vec2 p = vec2(XY.x, -XY.y);
+            float aspectRatio = vgaAspect/viewAspect;
+            if (aspectRatio < 1.0) {
+                p.x *= aspectRatio;
+            } else {
+                p.y /= aspectRatio;
+            }
+            if (!fullsreen) {
+                p = p*0.5 + vec2(-0.5,0.5);
+            }
+            VPos.xy = p;
+            `, FP:`
             vec4 c = screen(vec2(UV.x*WH.x/max_w, UV.y));
             vec2 a = cos(XY*PI/2.);
             float alpha = 1.0-pow(1.0-a.x*a.y, 8.0);
