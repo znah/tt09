@@ -118,7 +118,7 @@ def connect_layers(layers: Layers) -> DisjointSets:
     def connect(a, via, b):
         if (a not in layers) or (via not in layers) or (b not in layers):
             return
-        for p in layers[via].geometries:
+        for via_idx, p in enumerate(layers[via].geometries):
             c = p.centroid
             part_a = layers[a].query(c, 'within')
             part_b = layers[b].query(c, 'within')
@@ -126,6 +126,7 @@ def connect_layers(layers: Layers) -> DisjointSets:
                 continue
             a_idx, b_idx = int(part_a[0]), int(part_b[0])
             parts.merge(Part(a, a_idx), Part(b, b_idx))
+            parts.merge(Part(a, a_idx), Part(via, via_idx))
 
     wires = [layerstack[i, 20]['name'] for i in range(66, 72+1)]
     vias  = [layerstack[i, 44]['name'] for i in range(66, 72)]
@@ -344,7 +345,7 @@ class Cell:
         wire2pin = {v:k for k, v in self.pin2wire.items()}
         if out_wire is None:
             outs = (self.wire_by_type['out']-{0,1}) & set(wire2pin)
-            assert outs, "Can't find an output wire"
+            assert outs, "Can't find the output wire"
             out_wire = outs.pop()
         inputs, lut, _ = self.get_lut(out_wire)
         n = len(inputs)
@@ -406,17 +407,22 @@ def analyse_cells(gds):
     print('unresolved', format_stat(unresolved), '\n')
     return cells
 
+LAYER_IDX_0 = 16
+LAYER_CLOCK_BUF = 1
+LAYER_CLOCK_GATE = 2
+LAYER_MEMORY = 3
 
 def export_wires(top_cell):
     wire_rects = []
     wire_infos = []
+    layer_z = {lid:i + LAYER_IDX_0 for  i, lid in enumerate(layerstack)}
     for lid, quads in top_cell.gds_cell.get_polygons(by_spec=True, depth=0).items():
         if lid not in layerstack:
             continue
         layer_name = layerstack[lid]['name']
         if layer_name not in top_cell.layers:
             continue
-        z = lid[0]-66
+        z = layer_z[lid]
         for q in quads:
             assert len(q) == 4
             center = q.mean(0)
@@ -427,8 +433,8 @@ def export_wires(top_cell):
             if wire <= 1:  # skip power grid
                 continue
             (x0, y0), (x1, y1) = q.min(0), q.max(0)
-            wire_rects += [x0, y0, x1, y1]
-            wire_infos += [wire, z+16]
+            wire_rects.append([x0, y0, x1, y1])
+            wire_infos.append([wire, z])
     return wire_rects, wire_infos
 
 def export_circuit(top_cell, out_fn):
@@ -470,16 +476,16 @@ def export_circuit(top_cell, out_fn):
         
         px, py = 0.3, 0.3
         (x0, y0), (x1, y1) = ref.get_bounding_box()
-        wire_rects += [x0+px, y0+py, x1-px, y1-py]
+        wire_rects.append([x0+px, y0+py, x1-px, y1-py])
         cell_type = 0
         has_clk = 'clk' in cell.short_name
         if hidden_state and has_clk:
-            cell_type = 3  # clock gate
+            cell_type = LAYER_CLOCK_GATE
         elif has_clk:
-            cell_type = 2  # clock buf
+            cell_type = LAYER_CLOCK_BUF
         elif hidden_state:
-            cell_type = 1  # memory
-        wire_infos += [cell2top[outputs.pop()], cell_type]        
+            cell_type = LAYER_MEMORY
+        wire_infos.append([cell2top[outputs.pop()], cell_type])
 
     export = defaultdict(list)
     for i in range(next_wire+1):
@@ -489,22 +495,55 @@ def export_circuit(top_cell, out_fn):
             export['luts'].append(gate_luts.get(i, 0))
             export['inputs'].extend(gate_inputs.get(i, []))
             export['outputs'].extend(gate_outputs.get(i, []))
-    for k, arr in export.items():
-        arr = (np.uint64 if k=='luts' else np.uint32)(arr)
-        b64 = base64.b64encode(arr.tobytes()).decode('ascii')
-        export[k] = {'len': len(arr), 'data':b64, 'dtype':arr.dtype.name}
-        print(f'{k}: {len(arr)}')
 
-    with open(out_fn, 'w') as f:
-        f.write('{')
-        f.write('"bbox":%s,\n' % top_cell.bbox.ravel().tolist())
-        f.write('"pins":%s,\n' % json.dumps(top_cell.pin2wire))
-        f.write('"wire_rects":[%s],\n' % (','.join('%.3f'%v for v in wire_rects)))
-        f.write('"wire_infos":[%s],\n' % (','.join('%d'%v for v in wire_infos)))
-        f.write('"gates":%s\n'%json.dumps(export))
-        f.write('}')
+    meta = dict(bbox=top_cell.bbox.ravel().tolist())
+    meta_reserved = 1024*4
+    offset = [meta_reserved]
+    export_arrays = []
+    def add_array(name, a):
+        meta[name] = dict(offset=offset[0], shape=a.shape, dtype=a.dtype.name)
+        export_arrays.append((offset[0], a))
+        size = a.itemsize * a.size
+        align = 8
+        offset[0] += (size+align-1) // align * align
+    rects = np.array(wire_rects, dtype=np.float32).reshape(-1, 2)
+    (x0,y0), (x1,y1) = top_cell.bbox
+    rects = (rects-(x0,y0)) / (x1-x0, y1-y0)
+    rects = rects.reshape(-1,4).clip(0.0, 1.0)
+    wire_infos = np.uint16(wire_infos)
+    z_order = wire_infos[:,1].argsort()
+    add_array('wire_rects', np.uint16(rects[z_order]*((1<<16)-1)))
+    add_array('wire_infos', np.uint16(wire_infos[z_order]))
+    for k, arr in export.items():
+        arr = (np.uint64 if k=='luts' else np.uint16)(arr)
+        add_array(k, arr)
+
+    pin_names, pin_wires, pin_pos = [], [], []
+    for lab in top_cell.gds_cell.get_labels(depth=0):
+        if not (lab.text in ['clk', 'rst_n', 'ena'] or lab.text[0]=='u'):
+            continue
+        wire = top_cell.pin2wire.get(lab.text)
+        if not wire:
+            continue
+        pin_names.append(lab.text)
+        pin_wires.append(wire)
+        pin_pos.append(lab.position)
+    meta['pins'] = pin_names
+    add_array('pin_wires', np.uint16(pin_wires))
+    add_array('pin_pos', np.float32(pin_pos))
+
+    meta_json = json.dumps(meta).encode('utf8')
+    print(meta_json)
+    assert len(meta_json) < meta_reserved
+
+    with open(out_fn.with_suffix('.bin'), 'wb') as f:
+        f.write(meta_json)
+        f.seek(meta_reserved)
+        for ofs, a in export_arrays:
+            f.seek(ofs)
+            a.tofile(f)
+
     print('chip bbox:', top_cell.bbox.ravel().tolist())
-    print(input_n_stats)
 
 def fetch_gds(project, cache_dir=Path('gds')):
     tt_index, project = project.split('_', 1)
@@ -531,7 +570,11 @@ pdk_root = '/Users/moralex/ttsetup/pdk/volare/sky130/versions/bdc9412b3e468c102d
 pdk_gds = pdk_root+'sky130A/libs.ref/sky130_fd_sc_hd/gds/sky130_fd_sc_hd.gds'
 
 projects = [
+    '05_tt_um_dinogame',
+    #'07_tt_um_pongsagon_tiniest_gpu',
     '09_tt_um_znah_vga_ca',         # 😎
+    '07_tt_um_algofoogle_raybox_zero',
+    '08_tt_um_a1k0n_vgadonut',
     '09_tt_um_rejunity_vga_test01', # drop
     '08_tt_um_top',                 # 🔥
     '09_tt_um_2048_vga_game',       # shows a grid and 2048
@@ -547,12 +590,19 @@ projects = [
 
 
 if __name__ == '__main__':
-    for project in projects:
-        gds_fn = fetch_gds(project)
-        print(f'processing {gds_fn}...')
-        gds = gdspy.GdsLibrary().read_gds(gds_fn)
-        cells = analyse_cells(gds)
-        print('Top cell analysis ...')
-        top_cell = Cell(gds.top_level()[0], cells)
-        print('Export ...')
-        export_circuit(top_cell, gds_fn.with_suffix('.json'))
+    gds = gdspy.GdsLibrary().read_gds('gds/ihp/tt_um_znah_vga_ca.gds')
+    cells = analyse_cells(gds)
+    print('Top cell analysis ...')
+    top_cell = Cell(gds.top_level()[0], cells)
+    print('Export ...')
+    export_circuit(top_cell, 'ihp.json')
+
+    # for project in projects[:1]:
+    #     gds_fn = fetch_gds(project)
+    #     print(f'processing {gds_fn}...')
+    #     gds = gdspy.GdsLibrary().read_gds(gds_fn)
+    #     cells = analyse_cells(gds)
+    #     print('Top cell analysis ...')
+    #     top_cell = Cell(gds.top_level()[0], cells)
+    #     print('Export ...')
+    #     export_circuit(top_cell, gds_fn.with_suffix('.json'))

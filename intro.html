@@ -131,25 +131,7 @@
         story();
     }
 
-    canvas.addEventListener('wheel', e=>{
-        e.preventDefault();
-        const {view} = sim;
-        const dx=e.deltaX*0.001, dy=e.deltaY*0.001;
-        if (e.ctrlKey) {
-            view.log2zoom -= dy*10.0;
-            view.log2zoom = Math.max(0.0, view.log2zoom);
-        } else if (e.shiftKey) {
-            view.pan += dx;
-            view.tilt += dy;
-        } else {
-            const speed = Math.pow(2.0, -view.log2zoom)/view.baseScale;
-            const s = Math.sin(view.pan), c = Math.cos(view.pan);
-            view.centerX += (c*dx + s*dy)*speed;
-            view.centerY += (s*dx - c*dy)*speed;
-        }
-    }, {passive: false});
-
-    const music = new Tone.Player({url:"between_the_spaces.mp3", volume: -20}).toDestination();
+    const music = new Tone.Player({url:"music/between_the_spaces.mp3", volume: -20}).toDestination();
     const clickSynth = new Tone.MetalSynth({
         frequency: 200,
         envelope: {

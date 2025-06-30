@@ -72,6 +72,8 @@ class VGASimulator {
         this.screen_row = new Uint8Array(MAX_W*4);
         this.screen = glsl({}, {size:[MAX_W, VGA_SCREEN_H], tag:'screen'});
         this.min_steps_per_tick = 16;
+
+        glsl.gl.canvas.addEventListener('wheel', this.scrollHandler.bind(this), {passive: false});
     }
 
     load_circuit_bin(buf) {
@@ -223,14 +225,14 @@ class VGASimulator {
         const smoothState = glsl({prev:state[1], next:state[0], heat, substep, speed,
             coef0: Math.pow(0.8, Math.min(1.0, speed)),
             coef1: Math.min(1.0/Math.pow(speed,0.5), speed), FP:`
+            FOut = Src(I);
             float v0 = float(prev(I).r);
             float v1 = float(next(I).r);
-            float v = mix(v0, v1, substep);
             float h = heat(I).x;
-            float h0 = Src(I).y;
-            h = h0*coef0 + h*coef1;
-            FOut = vec4(v,h,0,0);
-            `},{size:state.size, format:'rg16f', story:2, tag:'smoothState'})
+            FOut.x = mix(v0, v1, substep);
+            FOut.y = FOut.y*coef0 + h*coef1;
+            FOut.z = max(FOut.z, min(1.0, h));
+        `},{size:state.size, format:'rgba16f', story:2, tag:'smoothState'})
 
         const time = (Date.now()-this.startTime)/1000.0;            
         
@@ -249,15 +251,16 @@ class VGASimulator {
             return p;
         }
         struct WireStyle {
-            float value, heat, expand, glow;
+            float value, heat, expand, glow, awake;
             vec4 color;
         };
         WireStyle wireStyle(int wire) {
             WireStyle s;
             ivec2 wireI = ivec2(wire&0xff, wire>>8);
-            vec2 vh = state(wireI).xy;
-            s.value = vh.x;
-            s.heat = vh.y;
+            vec4 st = state(wireI);
+            s.value = st.x;
+            s.heat = st.y;
+            s.awake = st.z;
             s.expand = 0.4 * s.heat / (1.0+s.heat);
             s.glow = 1.0 - min(1.0, 1.0/s.heat);
             s.color.rgb = mix(vec3(0.1, 0.4, 0.5), vec3(0.6, 0.4, 0.1), s.value);
@@ -265,8 +268,14 @@ class VGASimulator {
             s.color.rgb = mix( s.color.rgb, vec3(0.8, 0.1, 0.0), s.glow);
             s.color.a = wiresAlpha;
             return s;
-        }`};
+        }
+        float vignette(vec2 p) {
+            p *= (1.0-p)*4.0;
+            return p.x*p.y;
+        }
+        float vmax(vec3 p) { return max(p.x, max(p.y, p.z));}`};
         
+        // draw clock
         const clkPos = this.pin_pos['clk'];
         const clkWire = this.pin2wire['clk'];
         glsl({DepthTest:1, ...view, time, clkPos, clkWire, state:smoothState[0],
@@ -274,17 +283,16 @@ class VGASimulator {
             WireStyle ws = wireStyle(int(clkWire));
             varying vec4 color = ws.color;
             VPos.xyz = cubeVert(XY, ID.x)*(1.0+vec3(-ws.expand,ws.expand*3.,-ws.expand));
-            //VPos.xyz = erot(VPos.xyz, normalize(vec3(1.0,0.0,1.0)),-1.0) * vec3(1.0,3.0,1.0);
             VPos.xyz += vec3(clkPos, wireHeight*4.0) + vec3(0.0,2.0+float(ID.y),0.0); 
-            //VPos.xyz += (hash(ID.yzz+1)-0.5)*5.0;//*(1.0+ws.expand);
             VPos = applyView(VPos);
         `, FP:`
-        float a = 0.8 + 0.2*(1.0-XY.x*XY.x)*(1.0-XY.y*XY.y);
+        float a = 0.8+0.2*vignette(UV);
         FOut = color*a;`});
 
+        // draw gates
         const flipLayers = Math.cos(view.tilt) < -0.01;
         glsl({cellBox:this.bbox, ...geom, state:smoothState[0], 
-            time, speed, DepthTest:1, ...view, Face:'front', flipLayers,
+            time, DepthTest:1, ...view, Face:'front', flipLayers,
             Grid:[6, ...geom.rects.size], Blend:'s*sa+d*(1-sa)', VP:`
             const int LAYER_IDX_0 = 16;
             const vec3 cmap[4] = vec3[4](
@@ -312,12 +320,17 @@ class VGASimulator {
                 vec2 zrange = isVIA ? vec2(0.0, viaH) : vec2(viaH, 1.0);
                 zrange = (float(wireLayerI>>1) + zrange)*wireHeight;
                 p0.z = zrange.x; p1.z = zrange.y;
+                vec3 pmean = (p0+p1)*0.5;
+                vec3 d = p1-p0;
+                d *= 0.5*vec3(equal(d, vec3(vmax(d))));
+                //p0 = pmean-d; p1 = pmean+d;
                 p0 -= ws.expand; p1 += ws.expand;
                 layerReveal = layerReveal - float(wireLayerI+2);
                 color = ws.color;
             } else { // cells
                 color.rgb = cmap[layer] * (0.3+0.5*mix(ws.value, 0.5, ws.glow));
                 layerReveal = clamp(layerReveal*10.0-hash(id.xyy).x*8.0, 0.0, 1.0);
+                //layerReveal = min(layerReveal, ws.awake);
                 if (layerReveal<1.0) {
                     float t = 1.0-layerReveal;
                     float lift = -t*t*(3.0-2.0*t) * 100.0;
@@ -330,7 +343,7 @@ class VGASimulator {
             // setup geometry
             vec3 cube = cubeVert(XY, ID.x);
             vec3 d = p1-p0, c=(p0+p1)*0.5;
-            float m = max(d.x, max(d.y, d.z))*clamp(layerReveal, 0.0, 1.0);
+            float m = vmax(d)*clamp(layerReveal, 0.0, 1.0);
             if (isVIA) {
                 p1 = p0 + min(d, m);
             } else {
@@ -340,7 +353,7 @@ class VGASimulator {
             VPos.xyz = mix(p0, p1, cube*0.5+0.5);
             VPos = applyView(VPos);
             `, FP:`
-            float a = 0.8 + 0.2*(1.0-XY.x*XY.x)*(1.0-XY.y*XY.y);
+            float a = 0.8 + 0.2*vignette(UV);
             FOut = color*a;`});
     }
 
@@ -381,4 +394,23 @@ class VGASimulator {
             FOut.rgb += exp(-dot(dray,dray))*vec3(1.,1.,0.3);
             `});
     }
+
+    scrollHandler(e) {
+        e.preventDefault();
+        const {view} = this;
+        const dx=e.deltaX*0.001, dy=e.deltaY*0.001;
+        if (e.ctrlKey) {
+            view.log2zoom -= dy*10.0;
+            view.log2zoom = Math.max(0.0, view.log2zoom);
+        } else if (e.shiftKey) {
+            view.pan += dx;
+            view.tilt += dy;
+        } else {
+            const speed = Math.pow(2.0, -view.log2zoom)/view.baseScale;
+            const s = Math.sin(view.pan), c = Math.cos(view.pan);
+            view.centerX += (c*dx + s*dy)*speed;
+            view.centerY += (s*dx - c*dy)*speed;
+        }
+    }
+
 }
